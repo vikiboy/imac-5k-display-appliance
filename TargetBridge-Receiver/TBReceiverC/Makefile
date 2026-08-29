@@ -58,7 +58,7 @@ src/tb_native_metal_renderer.o: src/tb_native_metal_renderer.m src/tb_native_met
 	$(CC) $(filter-out -std=c11,$(CFLAGS)) -std=c++17 -x objective-c++ -fobjc-arc -c -o $@ $<
 
 clean:
-	rm -f $(OBJ) $(BIN) $(TEST_BIN) $(TEST_INPUT_QUEUE_BIN) $(TEST_RECEIVER_PROFILE_BIN) $(TEST_RENDERER_POLICY_BIN) $(TEST_NATIVE_METAL_BIN) $(BENCH_NATIVE_METAL_BIN) $(BENCH_OPENGL_BIN)
+	rm -f $(OBJ) $(BIN) $(TEST_BIN) $(TEST_INPUT_QUEUE_BIN) $(TEST_RECEIVER_PROFILE_BIN) $(TEST_RENDERER_POLICY_BIN) $(TEST_NATIVE_METAL_BIN) $(BENCH_NATIVE_METAL_BIN) $(BENCH_NATIVE_METAL_UNIVERSAL_BIN) $(BENCH_OPENGL_BIN)
 
 # Unit tests for the packet parser. net.c is pure POSIX, so this needs no
 # ffmpeg/SDL/pkgconf — it runs anywhere, including CI, with no hardware.
@@ -73,6 +73,7 @@ TEST_RECEIVER_PROFILE_BIN = test_receiver_profile
 TEST_RENDERER_POLICY_BIN = test_renderer_policy
 TEST_NATIVE_METAL_BIN = test_native_metal_renderer
 BENCH_NATIVE_METAL_BIN = benchmark_native_metal_renderer
+BENCH_NATIVE_METAL_UNIVERSAL_BIN = benchmark_native_metal_renderer_universal
 BENCH_OPENGL_BIN = benchmark_sdl_opengl_renderer
 TEST_PLATFORM_BINS =
 ifeq ($(UNAME_S),Darwin)
@@ -101,8 +102,17 @@ $(BENCH_NATIVE_METAL_BIN): benchmarks/benchmark_native_metal_renderer.m src/tb_n
 		benchmarks/benchmark_native_metal_renderer.m src/tb_native_metal_renderer.m src/renderer_policy.c \
 		-framework AppKit -framework CoreVideo -framework IOSurface -framework Metal -framework QuartzCore -lc++ -o $@
 
+$(BENCH_NATIVE_METAL_UNIVERSAL_BIN): benchmarks/benchmark_native_metal_renderer.m src/tb_native_metal_renderer.m src/tb_native_metal_renderer.h src/renderer_policy.c src/renderer_policy.h
+	$(CC) -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
+		-O2 -g -Wall -Wextra -Isrc -std=c++17 -x objective-c++ -fobjc-arc \
+		benchmarks/benchmark_native_metal_renderer.m src/tb_native_metal_renderer.m src/renderer_policy.c \
+		-framework AppKit -framework CoreVideo -framework IOSurface -framework Metal -framework QuartzCore -lc++ -o $@
+
 benchmark-metal: $(BENCH_NATIVE_METAL_BIN)
 	./$(BENCH_NATIVE_METAL_BIN)
+
+benchmark-metal-universal: $(BENCH_NATIVE_METAL_UNIVERSAL_BIN)
+	@file ./$(BENCH_NATIVE_METAL_UNIVERSAL_BIN)
 
 $(BENCH_OPENGL_BIN): benchmarks/benchmark_sdl_opengl_renderer.c
 	$(CC) -O2 -g -Wall -Wextra $(shell $(PKG) --cflags sdl2) \
@@ -120,4 +130,4 @@ ifeq ($(UNAME_S),Darwin)
 	./$(TEST_NATIVE_METAL_BIN)
 endif
 
-.PHONY: all clean test benchmark-metal benchmark-opengl
+.PHONY: all clean test benchmark-metal benchmark-metal-universal benchmark-opengl
