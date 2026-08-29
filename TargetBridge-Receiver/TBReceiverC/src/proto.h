@@ -15,10 +15,13 @@
  * type 0x21 = video frame
  *   payload = AVCC-formatted NAL units, 4-byte BE length prefixes (no start codes)
  *
- * type 0x22 = raw video frame (uncompressed NV12, "raw passthrough" mode)
+ * type 0x22 = raw video frame (whole-frame, 8-bit video-range NV12 diagnostic)
  *   payload = [1 byte format: 1=NV12][4 BE uint32 width][4 BE uint32 height]
  *             [4 BE uint32 yStride][4 BE uint32 uvStride]
  *             [Y plane: yStride*height][CbCr plane: uvStride*(height/2)]
+ *   The payload must end exactly after the CbCr plane. With no transmitted
+ *   color metadata, the receiver tags v1 conservatively as BT.709/sRGB. It is
+ *   a throughput diagnostic, not a P3-fidelity mode.
  *   (see handle_raw_frame in main.c; sender-side sendRawFrame)
  *
  * type 0x30 = heartbeat (JSON)

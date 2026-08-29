@@ -17,6 +17,7 @@
 #include "decoder.h"
 #include "display.h"
 #include "receiver_profile.h"
+#include "raw_nv12.h"
 #include "proto.h"
 #include "tb_gesture_bridge.h"
 #include "tb_display_tweaks.h"
@@ -931,40 +932,17 @@ static int on_native_frame(void *pixel_buffer, int w, int h, void *ud) {
  * Payload: [1: format=1(NV12)][BE32 w][BE32 h][BE32 yStride][BE32 uvStride]
  *          [Y plane: yStride*h][CbCr plane: uvStride*(h/2)] */
 static void handle_raw_frame(struct app *a, const uint8_t *p, size_t len) {
-    if (len < 17) return;
-    if (p[0] != 1) return; /* only NV12 is supported */
-    uint32_t w  = ((uint32_t)p[1]  << 24) | ((uint32_t)p[2]  << 16) | ((uint32_t)p[3]  << 8) | (uint32_t)p[4];
-    uint32_t h  = ((uint32_t)p[5]  << 24) | ((uint32_t)p[6]  << 16) | ((uint32_t)p[7]  << 8) | (uint32_t)p[8];
-    uint32_t ys = ((uint32_t)p[9]  << 24) | ((uint32_t)p[10] << 16) | ((uint32_t)p[11] << 8) | (uint32_t)p[12];
-    uint32_t us = ((uint32_t)p[13] << 24) | ((uint32_t)p[14] << 16) | ((uint32_t)p[15] << 8) | (uint32_t)p[16];
-    /* Keep malformed peer data from turning into oversized stride arithmetic or
-     * an out-of-bounds render. TargetBridge RAW is intentionally limited to
-     * practical 4:2:0 display sizes and the protocol packet cap. */
-    if (w == 0 || h == 0 || (w & 1) || (h & 1) ||
-        w > 8192 || h > 8192 || ys < w || us < w ||
-        ys > 16384 || us > 16384) return;
-    size_t y_size  = (size_t)ys * h;
-    size_t uv_size = (size_t)us * (h / 2);
-    size_t payload_size = len - 17;
-    if (y_size > payload_size || uv_size > payload_size - y_size) return;
-    const uint8_t *y  = p + 17;
-    const uint8_t *uv = y + y_size;
+    struct tb_raw_nv12_view frame;
+    if (!tb_raw_nv12_parse(p, len, &frame)) return;
 
-    a->have_video_frame = 1;
-    tb_copy_i18n(a->status_text, sizeof(a->status_text), "receiver.status.stream_active");
-    {
-        char width_text[16];
-        char height_text[16];
-        struct tb_i18n_pair pairs[] = {
-            { "width", width_text },
-            { "height", height_text }
-        };
-        snprintf(width_text, sizeof(width_text), "%u", w);
-        snprintf(height_text, sizeof(height_text), "%u", h);
-        tb_format_i18n(a->mode_text, sizeof(a->mode_text), "receiver.mode.receiving", pairs, 2);
+    const int displayed = tb_disp_render_raw_nv12(
+        a->disp,
+        frame.y, (int)frame.y_stride,
+        frame.uv, (int)frame.uv_stride,
+        (int)frame.width, (int)frame.height);
+    if (displayed > 0) {
+        on_frame_received(a, (int)frame.width, (int)frame.height);
     }
-    tb_disp_render_nv12(a->disp, y, (int)ys, uv, (int)us, (int)w, (int)h);
-    a->frames++;
 }
 
 static void ring_read(struct app *a, Uint8 *dst, int len) {

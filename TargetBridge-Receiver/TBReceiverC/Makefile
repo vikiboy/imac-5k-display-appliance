@@ -34,7 +34,7 @@ ifeq ($(UNAME_S),Darwin)
 LDFLAGS  += -framework ApplicationServices -framework AppKit -framework CoreFoundation -framework CoreGraphics -framework CoreText -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework IOSurface -framework CoreServices -framework CoreAudio -framework SystemConfiguration -framework Metal -framework QuartzCore -lc++
 endif
 
-C_SRC = src/main.c src/net.c src/decoder.c src/display.c src/input_queue.c src/receiver_profile.c src/renderer_policy.c src/tb_i18n.c
+C_SRC = src/main.c src/net.c src/decoder.c src/display.c src/input_queue.c src/receiver_profile.c src/renderer_policy.c src/raw_nv12.c src/tb_i18n.c
 OBJC_SRC = src/tb_gesture_bridge.m src/tb_display_tweaks.m
 OBJCXX_SRC =
 ifeq ($(UNAME_S),Darwin)
@@ -58,7 +58,7 @@ src/tb_native_metal_renderer.o: src/tb_native_metal_renderer.m src/tb_native_met
 	$(CC) $(filter-out -std=c11,$(CFLAGS)) -std=c++17 -x objective-c++ -fobjc-arc -c -o $@ $<
 
 clean:
-	rm -f $(OBJ) $(BIN) $(TEST_BIN) $(TEST_INPUT_QUEUE_BIN) $(TEST_RECEIVER_PROFILE_BIN) $(TEST_RENDERER_POLICY_BIN) $(TEST_NATIVE_METAL_BIN) $(BENCH_NATIVE_METAL_BIN) $(BENCH_NATIVE_METAL_UNIVERSAL_BIN) $(BENCH_OPENGL_BIN)
+	rm -f $(OBJ) $(BIN) $(TEST_BIN) $(TEST_INPUT_QUEUE_BIN) $(TEST_RECEIVER_PROFILE_BIN) $(TEST_RENDERER_POLICY_BIN) $(TEST_RAW_NV12_BIN) $(TEST_NATIVE_METAL_BIN) $(BENCH_NATIVE_METAL_BIN) $(BENCH_NATIVE_METAL_UNIVERSAL_BIN) $(BENCH_OPENGL_BIN)
 
 # Unit tests for the packet parser. net.c is pure POSIX, so this needs no
 # ffmpeg/SDL/pkgconf — it runs anywhere, including CI, with no hardware.
@@ -71,6 +71,7 @@ TEST_BIN = test_net_parser
 TEST_INPUT_QUEUE_BIN = test_input_queue
 TEST_RECEIVER_PROFILE_BIN = test_receiver_profile
 TEST_RENDERER_POLICY_BIN = test_renderer_policy
+TEST_RAW_NV12_BIN = test_raw_nv12
 TEST_NATIVE_METAL_BIN = test_native_metal_renderer
 BENCH_NATIVE_METAL_BIN = benchmark_native_metal_renderer
 BENCH_NATIVE_METAL_UNIVERSAL_BIN = benchmark_native_metal_renderer_universal
@@ -91,6 +92,9 @@ $(TEST_RECEIVER_PROFILE_BIN): tests/test_receiver_profile.c src/receiver_profile
 
 $(TEST_RENDERER_POLICY_BIN): tests/test_renderer_policy.c src/renderer_policy.c src/renderer_policy.h
 	$(CC) $(TEST_CFLAGS) -Isrc tests/test_renderer_policy.c src/renderer_policy.c -lm -o $@
+
+$(TEST_RAW_NV12_BIN): tests/test_raw_nv12.c src/raw_nv12.c src/raw_nv12.h
+	$(CC) $(TEST_CFLAGS) -Isrc tests/test_raw_nv12.c src/raw_nv12.c -o $@
 
 $(TEST_NATIVE_METAL_BIN): tests/test_native_metal_renderer.m src/tb_native_metal_renderer.m src/tb_native_metal_renderer.h
 	$(CC) -O2 -g -Wall -Wextra -Isrc -std=c++17 -x objective-c++ -fobjc-arc \
@@ -121,11 +125,12 @@ $(BENCH_OPENGL_BIN): benchmarks/benchmark_sdl_opengl_renderer.c
 benchmark-opengl: $(BENCH_OPENGL_BIN)
 	./$(BENCH_OPENGL_BIN)
 
-test: $(TEST_BIN) $(TEST_INPUT_QUEUE_BIN) $(TEST_RECEIVER_PROFILE_BIN) $(TEST_RENDERER_POLICY_BIN) $(TEST_PLATFORM_BINS)
+test: $(TEST_BIN) $(TEST_INPUT_QUEUE_BIN) $(TEST_RECEIVER_PROFILE_BIN) $(TEST_RENDERER_POLICY_BIN) $(TEST_RAW_NV12_BIN) $(TEST_PLATFORM_BINS)
 	./$(TEST_BIN)
 	./$(TEST_INPUT_QUEUE_BIN)
 	./$(TEST_RECEIVER_PROFILE_BIN)
 	./$(TEST_RENDERER_POLICY_BIN)
+	./$(TEST_RAW_NV12_BIN)
 ifeq ($(UNAME_S),Darwin)
 	./$(TEST_NATIVE_METAL_BIN)
 endif

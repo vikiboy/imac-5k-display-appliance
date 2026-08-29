@@ -48,6 +48,14 @@ void tb_disp_render_nv12(struct tb_display *d,
                          const uint8_t *uv, int uv_stride,
                          int w, int h);
 
+/* RAW diagnostic: prefer the opt-in native Metal IOSurface pool, falling back
+ * to the portable SDL upload when unavailable. Returns 1 when presented or
+ * submitted and 0 when a native diagnostic frame was deliberately dropped. */
+int tb_disp_render_raw_nv12(struct tb_display *d,
+                            const uint8_t *y, int y_stride,
+                            const uint8_t *uv, int uv_stride,
+                            int w, int h);
+
 /* Present a VideoToolbox CVPixelBuffer through the optional native Metal
  * path. Returns non-zero when the frame was handled; portable callers keep
  * using tb_disp_render_nv12. */

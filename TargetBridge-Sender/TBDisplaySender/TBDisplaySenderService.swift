@@ -774,25 +774,55 @@ private final class TBVideoPipeline: @unchecked Sendable {
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
         else { return }
         // Backpressure: never pile frames on top of a network that can't keep up.
-        if pendingVideoPackets >= preset.maxPendingVideoPackets {
+        if pendingVideoPackets >= 1 {
             droppedBeforeEncodeFrames += 1
             return
         }
-        guard CVPixelBufferGetPlaneCount(pixelBuffer) >= 2 else { return }
+        guard CVPixelBufferGetPixelFormatType(pixelBuffer) ==
+                  kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+              CVPixelBufferGetPlaneCount(pixelBuffer) == 2
+        else {
+            droppedBeforeEncodeFrames += 1
+            return
+        }
 
-        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        guard CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) ==
+                  kCVReturnSuccess
+        else {
+            droppedBeforeEncodeFrames += 1
+            return
+        }
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 
         guard let yBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0),
               let uvBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1)
-        else { return }
+        else {
+            droppedBeforeEncodeFrames += 1
+            return
+        }
         let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
         let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
         let yStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
         let uvStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
+        let yHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+        let uvWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 1)
         let uvHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 1)
+        guard width > 0, height > 0,
+              width <= 8192, height <= 8192,
+              width.isMultiple(of: 2), height.isMultiple(of: 2),
+              yHeight == height, uvWidth == width / 2, uvHeight == height / 2,
+              yStride >= width, uvStride >= width,
+              yStride <= 16384, uvStride <= 16384
+        else {
+            droppedBeforeEncodeFrames += 1
+            return
+        }
         let ySize = yStride * height
         let uvSize = uvStride * uvHeight
+        guard 18 + ySize + uvSize <= Int(TBMonitorProtocol.maxPacketLength) else {
+            droppedBeforeEncodeFrames += 1
+            return
+        }
 
         // Send the session ack on the first frame, mirroring the encoded path.
         if !ackSent {

@@ -20,6 +20,7 @@ struct tb_native_metal_stats {
     uint64_t dropped_frames;
     uint64_t drawable_requests;
     uint64_t submit_samples;
+    uint64_t raw_copy_samples;
     uint64_t inflight_frames;
     uint64_t inflight_frames_max;
     double   gpu_time_ms_total;
@@ -28,9 +29,12 @@ struct tb_native_metal_stats {
     double   drawable_wait_ms_max;
     double   submit_time_ms_total;
     double   submit_time_ms_max;
+    double   raw_copy_time_ms_total;
+    double   raw_copy_time_ms_max;
     uint64_t gpu_time_histogram[TB_NATIVE_METAL_TIMING_BUCKETS];
     uint64_t drawable_wait_histogram[TB_NATIVE_METAL_TIMING_BUCKETS];
     uint64_t submit_time_histogram[TB_NATIVE_METAL_TIMING_BUCKETS];
+    uint64_t raw_copy_time_histogram[TB_NATIVE_METAL_TIMING_BUCKETS];
 };
 
 void *tb_native_metal_create(void);
@@ -48,6 +52,24 @@ int tb_native_metal_render_nv12(void *renderer,
                                 int cursor_visible,
                                 int cursor_type,
                                 int cursor_large);
+
+/* Diagnostic path for network/software NV12. Copies the two CPU planes once
+ * into a bounded pool of IOSurface-backed pixel buffers, then uses the same
+ * Metal presenter as VideoToolbox frames. */
+int tb_native_metal_render_nv12_planes(void *renderer,
+                                       const uint8_t *y,
+                                       int y_stride,
+                                       const uint8_t *uv,
+                                       int uv_stride,
+                                       int width,
+                                       int height,
+                                       int cursor_x,
+                                       int cursor_y,
+                                       int cursor_source_w,
+                                       int cursor_source_h,
+                                       int cursor_visible,
+                                       int cursor_type,
+                                       int cursor_large);
 
 int tb_native_metal_render_cursor(void *renderer,
                                   int cursor_x,

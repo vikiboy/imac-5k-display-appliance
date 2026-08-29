@@ -56,6 +56,7 @@ struct tb_display {
     uint32_t      last_video_frame_time;
 #if defined(__APPLE__)
     int           metal_native_enabled;
+    int           metal_native_forced;
     int           metal_native_auto;
     int           metal_native_auto_decided;
     int           metal_native_failed_logged;
@@ -632,6 +633,7 @@ struct tb_display *tb_disp_create(int fullscreen) {
         if (!disabled) d->native_metal_renderer = tb_native_metal_create();
         if (!disabled && d->native_metal_renderer) {
             d->metal_native_enabled = 1;
+            d->metal_native_forced = native_forced;
             d->metal_native_auto = native_auto;
             fprintf(stderr,
                     native_auto
@@ -1251,6 +1253,11 @@ static void tb_disp_log_native_stats(struct tb_display *d) {
     const double submitTotal =
         stats.submit_time_ms_total -
         d->native_stats_previous.submit_time_ms_total;
+    const uint64_t rawCopySamples =
+        stats.raw_copy_samples - d->native_stats_previous.raw_copy_samples;
+    const double rawCopyTotal =
+        stats.raw_copy_time_ms_total -
+        d->native_stats_previous.raw_copy_time_ms_total;
     fprintf(stderr,
             "[metal-native-perf] submitted=%llu completed=%llu dropped=%llu "
             "inflight=%llu inflightMax=%llu "
@@ -1260,7 +1267,9 @@ static void tb_disp_log_native_stats(struct tb_display *d) {
             "gpuMax=%.3fms "
             "drawableWaitAvg=%.3fms drawableWaitP50=%.2fms "
             "drawableWaitP95=%.2fms drawableWaitP99=%.2fms "
-            "drawableWaitMax=%.3fms\n",
+            "drawableWaitMax=%.3fms "
+            "rawCopyAvg=%.3fms rawCopyP50=%.2fms rawCopyP95=%.2fms "
+            "rawCopyP99=%.2fms rawCopyMax=%.3fms\n",
             (unsigned long long)submitted,
             (unsigned long long)completed,
             (unsigned long long)dropped,
@@ -1298,7 +1307,18 @@ static void tb_disp_log_native_stats(struct tb_display *d) {
             tb_disp_histogram_percentile_delta(
                 stats.drawable_wait_histogram,
                 d->native_stats_previous.drawable_wait_histogram, 99),
-            stats.drawable_wait_ms_max);
+            stats.drawable_wait_ms_max,
+            rawCopySamples ? rawCopyTotal / (double)rawCopySamples : 0.0,
+            tb_disp_histogram_percentile_delta(
+                stats.raw_copy_time_histogram,
+                d->native_stats_previous.raw_copy_time_histogram, 50),
+            tb_disp_histogram_percentile_delta(
+                stats.raw_copy_time_histogram,
+                d->native_stats_previous.raw_copy_time_histogram, 95),
+            tb_disp_histogram_percentile_delta(
+                stats.raw_copy_time_histogram,
+                d->native_stats_previous.raw_copy_time_histogram, 99),
+            stats.raw_copy_time_ms_max);
     d->native_stats_previous = stats;
     d->native_stats_tick = now;
 }
@@ -1397,6 +1417,43 @@ int tb_disp_render_native_nv12(struct tb_display *d,
     (void)h;
 #endif
     return 0;
+}
+
+int tb_disp_render_raw_nv12(struct tb_display *d,
+                            const uint8_t *y, int y_stride,
+                            const uint8_t *uv, int uv_stride,
+                            int w, int h) {
+#if defined(__APPLE__)
+    if (d && d->metal_native_forced && d->metal_native_enabled &&
+        d->native_metal_renderer) {
+        tb_disp_set_connection_state(d, 1);
+        const int result = tb_native_metal_render_nv12_planes(
+            d->native_metal_renderer,
+            y, y_stride, uv, uv_stride, w, h,
+            d->cursor_x, d->cursor_y,
+            d->cursor_source_w, d->cursor_source_h,
+            d->cursor_visible, d->cursor_type, d->cursor_large);
+        if (result > 0) {
+            d->last_video_frame_time = SDL_GetTicks();
+            tb_disp_log_native_stats(d);
+            tb_disp_evaluate_native_auto(d);
+            return 1;
+        }
+        if (result == 0) {
+            tb_disp_log_native_stats(d);
+            return 0;
+        }
+        d->metal_native_enabled = 0;
+        tb_native_metal_set_visible(d->native_metal_renderer, 0);
+        if (!d->metal_native_failed_logged) {
+            d->metal_native_failed_logged = 1;
+            fprintf(stderr,
+                    "[disp] native Metal RAW path failed; using OpenGL NV12 upload\n");
+        }
+    }
+#endif
+    tb_disp_render_nv12(d, y, y_stride, uv, uv_stride, w, h);
+    return 1;
 }
 
 void tb_disp_set_cursor(struct tb_display *d,

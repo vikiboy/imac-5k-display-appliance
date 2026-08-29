@@ -155,6 +155,19 @@ static BOOL tb_pixel_buffer_uses_display_p3(CVPixelBufferRef pixelBuffer) {
               cursorType:(int)cursorType
              cursorLarge:(BOOL)cursorLarge
            rememberFrame:(BOOL)rememberFrame;
+- (int)renderNV12PlanesY:(const uint8_t *)y
+                 yStride:(int)yStride
+                      uv:(const uint8_t *)uv
+                uvStride:(int)uvStride
+                   width:(int)width
+                  height:(int)height
+                 cursorX:(int)cursorX
+                 cursorY:(int)cursorY
+             cursorWidth:(int)cursorWidth
+            cursorHeight:(int)cursorHeight
+           cursorVisible:(BOOL)cursorVisible
+              cursorType:(int)cursorType
+             cursorLarge:(BOOL)cursorLarge;
 - (int)renderCursorX:(int)cursorX
              cursorY:(int)cursorY
          cursorWidth:(int)cursorWidth
@@ -172,6 +185,9 @@ static BOOL tb_pixel_buffer_uses_display_p3(CVPixelBufferRef pixelBuffer) {
     id<MTLCommandQueue> _commandQueue;
     id<MTLRenderPipelineState> _pipeline;
     CVMetalTextureCacheRef _textureCache;
+    CVPixelBufferPoolRef _rawPool;
+    size_t _rawPoolWidth;
+    size_t _rawPoolHeight;
     TBNativeMetalView *_view;
     CAMetalLayer *_metalLayer;
     CGColorSpaceRef _layerColorSpace;
@@ -246,6 +262,46 @@ static BOOL tb_pixel_buffer_uses_display_p3(CVPixelBufferRef pixelBuffer) {
         CFRelease(_textureCache);
         _textureCache = NULL;
     }
+    if (_rawPool) {
+        CVPixelBufferPoolFlush(_rawPool, kCVPixelBufferPoolFlushExcessBuffers);
+        CFRelease(_rawPool);
+        _rawPool = NULL;
+    }
+}
+
+- (BOOL)ensureRawPoolWidth:(size_t)width height:(size_t)height {
+    if (_rawPool && _rawPoolWidth == width && _rawPoolHeight == height) return YES;
+    if (_rawPool) {
+        CVPixelBufferPoolFlush(_rawPool, kCVPixelBufferPoolFlushExcessBuffers);
+        CFRelease(_rawPool);
+        _rawPool = NULL;
+    }
+
+    NSDictionary *poolAttributes = @{
+        (__bridge NSString *)kCVPixelBufferPoolMinimumBufferCountKey: @4
+    };
+    NSDictionary *pixelAttributes = @{
+        (__bridge NSString *)kCVPixelBufferPixelFormatTypeKey:
+            @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+        (__bridge NSString *)kCVPixelBufferWidthKey: @(width),
+        (__bridge NSString *)kCVPixelBufferHeightKey: @(height),
+        (__bridge NSString *)kCVPixelBufferMetalCompatibilityKey: @YES,
+        (__bridge NSString *)kCVPixelBufferIOSurfacePropertiesKey: @{}
+    };
+    const CVReturn status = CVPixelBufferPoolCreate(
+        kCFAllocatorDefault,
+        (__bridge CFDictionaryRef)poolAttributes,
+        (__bridge CFDictionaryRef)pixelAttributes,
+        &_rawPool);
+    if (status != kCVReturnSuccess || !_rawPool) {
+        fprintf(stderr, "[metal-native] raw CVPixelBufferPoolCreate failed: %d\n",
+                (int)status);
+        return NO;
+    }
+    _rawPoolWidth = width;
+    _rawPoolHeight = height;
+    fprintf(stderr, "[metal-native] raw IOSurface pool %zux%zu\n", width, height);
+    return YES;
 }
 
 - (NSWindow *)receiverWindow {
@@ -380,6 +436,127 @@ static BOOL tb_pixel_buffer_uses_display_p3(CVPixelBufferRef pixelBuffer) {
     os_unfair_lock_unlock(&_statsLock);
 }
 
+- (void)recordRawCopyMilliseconds:(double)milliseconds {
+    os_unfair_lock_lock(&_statsLock);
+    _stats.raw_copy_samples++;
+    _stats.raw_copy_time_ms_total += milliseconds;
+    _stats.raw_copy_time_histogram[
+        tb_native_metal_timing_bucket(milliseconds)]++;
+    if (milliseconds > _stats.raw_copy_time_ms_max) {
+        _stats.raw_copy_time_ms_max = milliseconds;
+    }
+    os_unfair_lock_unlock(&_statsLock);
+}
+
+- (int)renderNV12PlanesY:(const uint8_t *)y
+                 yStride:(int)yStride
+                      uv:(const uint8_t *)uv
+                uvStride:(int)uvStride
+                   width:(int)width
+                  height:(int)height
+                 cursorX:(int)cursorX
+                 cursorY:(int)cursorY
+             cursorWidth:(int)cursorWidth
+            cursorHeight:(int)cursorHeight
+           cursorVisible:(BOOL)cursorVisible
+              cursorType:(int)cursorType
+             cursorLarge:(BOOL)cursorLarge {
+    @autoreleasepool {
+        if (!y || !uv || width <= 0 || height <= 0 || (width & 1) ||
+            (height & 1) || width > 8192 || height > 8192 ||
+            yStride < width || uvStride < width || yStride > 16384 ||
+            uvStride > 16384) return -1;
+        if (![self ensureRawPoolWidth:(size_t)width height:(size_t)height]) return -1;
+
+        CVPixelBufferRef pixelBuffer = NULL;
+        const CFTimeInterval copyStarted = CACurrentMediaTime();
+        NSDictionary *auxiliaryAttributes = @{
+            (__bridge NSString *)kCVPixelBufferPoolAllocationThresholdKey: @4
+        };
+        const CVReturn createStatus = CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(
+            kCFAllocatorDefault,
+            _rawPool,
+            (__bridge CFDictionaryRef)auxiliaryAttributes,
+            &pixelBuffer);
+        if (createStatus == kCVReturnWouldExceedAllocationThreshold) {
+            [self recordDrop];
+            return 0;
+        }
+        if (createStatus != kCVReturnSuccess || !pixelBuffer) {
+            fprintf(stderr, "[metal-native] raw pixel buffer allocation failed: %d\n",
+                    (int)createStatus);
+            return -1;
+        }
+
+        const CVReturn lockStatus = CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+        if (lockStatus != kCVReturnSuccess ||
+            CVPixelBufferGetPlaneCount(pixelBuffer) < 2) {
+            if (lockStatus == kCVReturnSuccess) {
+                CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+            }
+            CVPixelBufferRelease(pixelBuffer);
+            return -1;
+        }
+
+        uint8_t *destinationY = (uint8_t *)
+            CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0);
+        uint8_t *destinationUV = (uint8_t *)
+            CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
+        const size_t destinationYStride =
+            CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0);
+        const size_t destinationUVStride =
+            CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
+        if (!destinationY || !destinationUV ||
+            destinationYStride < (size_t)width ||
+            destinationUVStride < (size_t)width) {
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+            CVPixelBufferRelease(pixelBuffer);
+            return -1;
+        }
+        for (int row = 0; row < height; row++) {
+            memcpy(destinationY + (size_t)row * destinationYStride,
+                   y + (size_t)row * (size_t)yStride,
+                   (size_t)width);
+        }
+        for (int row = 0; row < height / 2; row++) {
+            memcpy(destinationUV + (size_t)row * destinationUVStride,
+                   uv + (size_t)row * (size_t)uvStride,
+                   (size_t)width);
+        }
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+        [self recordRawCopyMilliseconds:
+            (CACurrentMediaTime() - copyStarted) * 1000.0];
+
+        /* RAW v1 carries no color metadata. Tag the diagnostic conservatively
+         * as BT.709/sRGB; a future header must carry actual source metadata
+         * before RAW can claim Display-P3 fidelity. */
+        CVBufferSetAttachment(pixelBuffer,
+                              kCVImageBufferColorPrimariesKey,
+                              kCVImageBufferColorPrimaries_ITU_R_709_2,
+                              kCVAttachmentMode_ShouldPropagate);
+        CVBufferSetAttachment(pixelBuffer,
+                              kCVImageBufferTransferFunctionKey,
+                              kCVImageBufferTransferFunction_ITU_R_709_2,
+                              kCVAttachmentMode_ShouldPropagate);
+        CVBufferSetAttachment(pixelBuffer,
+                              kCVImageBufferYCbCrMatrixKey,
+                              kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                              kCVAttachmentMode_ShouldPropagate);
+
+        const int result = [self renderPixelBuffer:pixelBuffer
+                                           cursorX:cursorX
+                                           cursorY:cursorY
+                                       cursorWidth:cursorWidth
+                                      cursorHeight:cursorHeight
+                                     cursorVisible:cursorVisible
+                                        cursorType:cursorType
+                                       cursorLarge:cursorLarge
+                                     rememberFrame:YES];
+        CVPixelBufferRelease(pixelBuffer);
+        return result;
+    }
+}
+
 - (int)renderPixelBuffer:(CVPixelBufferRef)pixelBuffer
                  cursorX:(int)cursorX
                  cursorY:(int)cursorY
@@ -394,12 +571,6 @@ static BOOL tb_pixel_buffer_uses_display_p3(CVPixelBufferRef pixelBuffer) {
         [self updateDrawableSize];
         [self updateColorSpaceForPixelBuffer:pixelBuffer];
         _view.hidden = NO;
-
-        if (rememberFrame && pixelBuffer != _latestFrame) {
-            CVPixelBufferRetain(pixelBuffer);
-            if (_latestFrame) CVPixelBufferRelease(_latestFrame);
-            _latestFrame = pixelBuffer;
-        }
 
         if (dispatch_semaphore_wait(_inflightSemaphore, DISPATCH_TIME_NOW) != 0) {
             [self recordDrop];
@@ -486,9 +657,21 @@ static BOOL tb_pixel_buffer_uses_display_p3(CVPixelBufferRef pixelBuffer) {
             format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange ? 1u : 0u;
 
         id<MTLCommandBuffer> commandBuffer = [_commandQueue commandBuffer];
+        if (!commandBuffer) {
+            CFRelease(lumaRef);
+            CFRelease(chromaRef);
+            dispatch_semaphore_signal(_inflightSemaphore);
+            return -1;
+        }
         commandBuffer.label = @"TargetBridge NV12 Frame";
         id<MTLRenderCommandEncoder> encoder =
             [commandBuffer renderCommandEncoderWithDescriptor:pass];
+        if (!encoder) {
+            CFRelease(lumaRef);
+            CFRelease(chromaRef);
+            dispatch_semaphore_signal(_inflightSemaphore);
+            return -1;
+        }
         [encoder setRenderPipelineState:_pipeline];
         [encoder setFragmentTexture:lumaTexture atIndex:0];
         [encoder setFragmentTexture:chromaTexture atIndex:1];
@@ -496,6 +679,15 @@ static BOOL tb_pixel_buffer_uses_display_p3(CVPixelBufferRef pixelBuffer) {
         [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
         [encoder endEncoding];
         [commandBuffer presentDrawable:drawable];
+
+        /* A queue/drawable drop must not become visible later through a cursor
+         * redraw. Publish latestFrame only after this frame has secured every
+         * resource needed for command submission. */
+        if (rememberFrame && pixelBuffer != _latestFrame) {
+            CVPixelBufferRetain(pixelBuffer);
+            if (_latestFrame) CVPixelBufferRelease(_latestFrame);
+            _latestFrame = pixelBuffer;
+        }
 
         CVPixelBufferRetain(pixelBuffer);
         [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
@@ -641,6 +833,39 @@ int tb_native_metal_render_nv12(void *renderer,
                     cursorType:cursor_type
                    cursorLarge:cursor_large ? YES : NO
                  rememberFrame:YES];
+    }
+}
+
+int tb_native_metal_render_nv12_planes(void *renderer,
+                                       const uint8_t *y,
+                                       int y_stride,
+                                       const uint8_t *uv,
+                                       int uv_stride,
+                                       int width,
+                                       int height,
+                                       int cursor_x,
+                                       int cursor_y,
+                                       int cursor_source_w,
+                                       int cursor_source_h,
+                                       int cursor_visible,
+                                       int cursor_type,
+                                       int cursor_large) {
+    if (!renderer) return -1;
+    @autoreleasepool {
+        return [(__bridge TBNativeMetalRenderer *)renderer
+            renderNV12PlanesY:y
+                       yStride:y_stride
+                            uv:uv
+                      uvStride:uv_stride
+                         width:width
+                        height:height
+                       cursorX:cursor_x
+                       cursorY:cursor_y
+                   cursorWidth:cursor_source_w
+                  cursorHeight:cursor_source_h
+                 cursorVisible:cursor_visible ? YES : NO
+                    cursorType:cursor_type
+                   cursorLarge:cursor_large ? YES : NO];
     }
 }
 

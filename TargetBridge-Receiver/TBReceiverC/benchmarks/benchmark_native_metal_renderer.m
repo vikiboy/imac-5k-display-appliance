@@ -77,8 +77,11 @@ int main(int argc, const char *argv[]) {
         const int height = argc > 2 ? atoi(argv[2]) : 2304;
         const int frameCount = argc > 3 ? atoi(argv[3]) : 180;
         const int targetFPS = argc > 4 ? atoi(argv[4]) : 60;
+        const BOOL rawCopy = argc > 5 && strcmp(argv[5], "raw-copy") == 0;
         if (width <= 0 || height <= 0 || frameCount < 120 || targetFPS <= 0) {
-            fprintf(stderr, "usage: benchmark_native_metal_renderer [width height frames>=120 fps]\n");
+            fprintf(stderr,
+                    "usage: benchmark_native_metal_renderer "
+                    "[width height frames>=120 fps [iosurface|raw-copy]]\n");
             return 64;
         }
         if (!MTLCreateSystemDefaultDevice()) {
@@ -116,17 +119,52 @@ int main(int argc, const char *argv[]) {
         }
 
         const CFTimeInterval started = CACurrentMediaTime();
+        const uint8_t *rawY = NULL;
+        const uint8_t *rawUV = NULL;
+        int rawYStride = 0;
+        int rawUVStride = 0;
+        if (rawCopy) {
+            const CVReturn lockStatus = CVPixelBufferLockBaseAddress(
+                pixelBuffer, kCVPixelBufferLock_ReadOnly);
+            rawY = (const uint8_t *)
+                CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0);
+            rawUV = (const uint8_t *)
+                CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
+            rawYStride = (int)CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0);
+            rawUVStride = (int)CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
+            if (lockStatus != kCVReturnSuccess || !rawY || !rawUV) {
+                fprintf(stderr,
+                        "TB_METAL_BENCHMARK result=failed reason=source-lock\n");
+                if (lockStatus == kCVReturnSuccess) {
+                    CVPixelBufferUnlockBaseAddress(
+                        pixelBuffer, kCVPixelBufferLock_ReadOnly);
+                }
+                CVPixelBufferRelease(pixelBuffer);
+                tb_native_metal_destroy(renderer);
+                [window close];
+                return 71;
+            }
+        }
         for (int frame = 0; frame < frameCount; frame++) {
-            (void)tb_native_metal_render_nv12(
-                renderer,
-                pixelBuffer,
-                (frame * 13) % width,
-                (frame * 7) % height,
-                width,
-                height,
-                1,
-                0,
-                0);
+            if (rawCopy) {
+                (void)tb_native_metal_render_nv12_planes(
+                    renderer,
+                    rawY, rawYStride, rawUV, rawUVStride,
+                    width, height,
+                    (frame * 13) % width, (frame * 7) % height,
+                    width, height, 1, 0, 0);
+            } else {
+                (void)tb_native_metal_render_nv12(
+                    renderer,
+                    pixelBuffer,
+                    (frame * 13) % width,
+                    (frame * 7) % height,
+                    width,
+                    height,
+                    1,
+                    0,
+                    0);
+            }
             const CFTimeInterval target = started +
                 (CFTimeInterval)(frame + 1) / (CFTimeInterval)targetFPS;
             const CFTimeInterval delay = target - CACurrentMediaTime();
@@ -134,6 +172,10 @@ int main(int argc, const char *argv[]) {
                 [[NSRunLoop currentRunLoop]
                     runUntilDate:[NSDate dateWithTimeIntervalSinceNow:delay]];
             }
+        }
+        if (rawCopy) {
+            CVPixelBufferUnlockBaseAddress(pixelBuffer,
+                                           kCVPixelBufferLock_ReadOnly);
         }
 
         struct tb_native_metal_stats stats;
@@ -162,6 +204,7 @@ int main(int argc, const char *argv[]) {
                 : "insufficient-sample";
         printf(
             "TB_METAL_BENCHMARK result=%s size=%dx%d requested=%d targetFPS=%d "
+            "input=%s "
             "elapsed=%.3fs submitted=%llu completed=%llu dropped=%llu "
             "inflight=%llu inflightMax=%llu "
             "submitAvg=%.3fms submitP50=%.2fms submitP95=%.2fms "
@@ -170,12 +213,15 @@ int main(int argc, const char *argv[]) {
             "gpuMax=%.3fms drawableWaitAvg=%.3fms "
             "drawableWaitP50=%.2fms drawableWaitP95=%.2fms "
             "drawableWaitP99=%.2fms drawableWaitMax=%.3fms "
+            "rawCopyAvg=%.3fms rawCopyP50=%.2fms rawCopyP95=%.2fms "
+            "rawCopyP99=%.2fms rawCopyMax=%.3fms "
             "color=%s\n",
             decision,
             width,
             height,
             frameCount,
             targetFPS,
+            rawCopy ? "raw-copy" : "iosurface",
             elapsed,
             (unsigned long long)stats.submitted_frames,
             (unsigned long long)stats.completed_frames,
@@ -201,6 +247,13 @@ int main(int argc, const char *argv[]) {
             histogram_percentile(stats.drawable_wait_histogram, 95),
             histogram_percentile(stats.drawable_wait_histogram, 99),
             stats.drawable_wait_ms_max,
+            stats.raw_copy_samples
+                ? stats.raw_copy_time_ms_total / (double)stats.raw_copy_samples
+                : 0.0,
+            histogram_percentile(stats.raw_copy_time_histogram, 50),
+            histogram_percentile(stats.raw_copy_time_histogram, 95),
+            histogram_percentile(stats.raw_copy_time_histogram, 99),
+            stats.raw_copy_time_ms_max,
             tb_native_metal_color_space_name(renderer));
 
         CVPixelBufferRelease(pixelBuffer);
