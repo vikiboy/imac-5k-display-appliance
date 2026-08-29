@@ -9,6 +9,27 @@
 #include <stdlib.h>
 #include <string.h>
 
+static double histogram_percentile(
+    const uint64_t histogram[TB_NATIVE_METAL_TIMING_BUCKETS],
+    unsigned percentile) {
+    uint64_t total = 0;
+    for (size_t i = 0; i < TB_NATIVE_METAL_TIMING_BUCKETS; i++) {
+        total += histogram[i];
+    }
+    if (total == 0) return 0.0;
+
+    const uint64_t wanted = (total * percentile + 99) / 100;
+    uint64_t cumulative = 0;
+    for (size_t i = 0; i < TB_NATIVE_METAL_TIMING_BUCKETS; i++) {
+        cumulative += histogram[i];
+        if (cumulative >= wanted) {
+            return (double)(i + 1) * TB_NATIVE_METAL_TIMING_BUCKET_MS;
+        }
+    }
+    return (double)TB_NATIVE_METAL_TIMING_BUCKETS *
+        TB_NATIVE_METAL_TIMING_BUCKET_MS;
+}
+
 static CVPixelBufferRef make_frame(size_t width, size_t height) {
     CVPixelBufferRef pixelBuffer = NULL;
     CFDictionaryRef attributes = (__bridge CFDictionaryRef)@{
@@ -95,10 +116,7 @@ int main(int argc, const char *argv[]) {
         }
 
         const CFTimeInterval started = CACurrentMediaTime();
-        double submitTimeMsTotal = 0.0;
-        double submitTimeMsMax = 0.0;
         for (int frame = 0; frame < frameCount; frame++) {
-            const CFTimeInterval submitStarted = CACurrentMediaTime();
             (void)tb_native_metal_render_nv12(
                 renderer,
                 pixelBuffer,
@@ -109,10 +127,6 @@ int main(int argc, const char *argv[]) {
                 1,
                 0,
                 0);
-            const double submitTimeMs =
-                (CACurrentMediaTime() - submitStarted) * 1000.0;
-            submitTimeMsTotal += submitTimeMs;
-            if (submitTimeMs > submitTimeMsMax) submitTimeMsMax = submitTimeMs;
             const CFTimeInterval target = started +
                 (CFTimeInterval)(frame + 1) / (CFTimeInterval)targetFPS;
             const CFTimeInterval delay = target - CACurrentMediaTime();
@@ -149,7 +163,13 @@ int main(int argc, const char *argv[]) {
         printf(
             "TB_METAL_BENCHMARK result=%s size=%dx%d requested=%d targetFPS=%d "
             "elapsed=%.3fs submitted=%llu completed=%llu dropped=%llu "
-            "submitAvg=%.3fms submitMax=%.3fms gpuAvg=%.3fms gpuMax=%.3fms "
+            "inflight=%llu inflightMax=%llu "
+            "submitAvg=%.3fms submitP50=%.2fms submitP95=%.2fms "
+            "submitP99=%.2fms submitMax=%.3fms "
+            "gpuAvg=%.3fms gpuP50=%.2fms gpuP95=%.2fms gpuP99=%.2fms "
+            "gpuMax=%.3fms drawableWaitAvg=%.3fms "
+            "drawableWaitP50=%.2fms drawableWaitP95=%.2fms "
+            "drawableWaitP99=%.2fms drawableWaitMax=%.3fms "
             "color=%s\n",
             decision,
             width,
@@ -160,10 +180,27 @@ int main(int argc, const char *argv[]) {
             (unsigned long long)stats.submitted_frames,
             (unsigned long long)stats.completed_frames,
             (unsigned long long)stats.dropped_frames,
-            submitTimeMsTotal / (double)frameCount,
-            submitTimeMsMax,
+            (unsigned long long)stats.inflight_frames,
+            (unsigned long long)stats.inflight_frames_max,
+            stats.submit_samples
+                ? stats.submit_time_ms_total / (double)stats.submit_samples
+                : 0.0,
+            histogram_percentile(stats.submit_time_histogram, 50),
+            histogram_percentile(stats.submit_time_histogram, 95),
+            histogram_percentile(stats.submit_time_histogram, 99),
+            stats.submit_time_ms_max,
             health.gpu_average_ms,
+            histogram_percentile(stats.gpu_time_histogram, 50),
+            histogram_percentile(stats.gpu_time_histogram, 95),
+            histogram_percentile(stats.gpu_time_histogram, 99),
             stats.gpu_time_ms_max,
+            stats.drawable_requests
+                ? stats.drawable_wait_ms_total / (double)stats.drawable_requests
+                : 0.0,
+            histogram_percentile(stats.drawable_wait_histogram, 50),
+            histogram_percentile(stats.drawable_wait_histogram, 95),
+            histogram_percentile(stats.drawable_wait_histogram, 99),
+            stats.drawable_wait_ms_max,
             tb_native_metal_color_space_name(renderer));
 
         CVPixelBufferRelease(pixelBuffer);

@@ -1205,6 +1205,28 @@ void tb_disp_render_nv12(struct tb_display *d,
 }
 
 #if defined(__APPLE__)
+static double tb_disp_histogram_percentile_delta(
+    const uint64_t current[TB_NATIVE_METAL_TIMING_BUCKETS],
+    const uint64_t previous[TB_NATIVE_METAL_TIMING_BUCKETS],
+    unsigned percentile) {
+    uint64_t total = 0;
+    for (size_t i = 0; i < TB_NATIVE_METAL_TIMING_BUCKETS; i++) {
+        total += current[i] >= previous[i] ? current[i] - previous[i] : 0;
+    }
+    if (total == 0) return 0.0;
+
+    const uint64_t wanted = (total * percentile + 99) / 100;
+    uint64_t cumulative = 0;
+    for (size_t i = 0; i < TB_NATIVE_METAL_TIMING_BUCKETS; i++) {
+        cumulative += current[i] >= previous[i] ? current[i] - previous[i] : 0;
+        if (cumulative >= wanted) {
+            return (double)(i + 1) * TB_NATIVE_METAL_TIMING_BUCKET_MS;
+        }
+    }
+    return (double)TB_NATIVE_METAL_TIMING_BUCKETS *
+        TB_NATIVE_METAL_TIMING_BUCKET_MS;
+}
+
 static void tb_disp_log_native_stats(struct tb_display *d) {
     const uint32_t now = SDL_GetTicks();
     if (d->native_stats_tick != 0 && now - d->native_stats_tick < 1000) return;
@@ -1219,14 +1241,64 @@ static void tb_disp_log_native_stats(struct tb_display *d) {
         stats.dropped_frames - d->native_stats_previous.dropped_frames;
     const double gpuTotal =
         stats.gpu_time_ms_total - d->native_stats_previous.gpu_time_ms_total;
+    const uint64_t drawableRequests =
+        stats.drawable_requests - d->native_stats_previous.drawable_requests;
+    const double drawableWaitTotal =
+        stats.drawable_wait_ms_total -
+        d->native_stats_previous.drawable_wait_ms_total;
+    const uint64_t submitSamples =
+        stats.submit_samples - d->native_stats_previous.submit_samples;
+    const double submitTotal =
+        stats.submit_time_ms_total -
+        d->native_stats_previous.submit_time_ms_total;
     fprintf(stderr,
             "[metal-native-perf] submitted=%llu completed=%llu dropped=%llu "
-            "gpuAvg=%.3fms gpuMax=%.3fms\n",
+            "inflight=%llu inflightMax=%llu "
+            "submitAvg=%.3fms submitP50=%.2fms submitP95=%.2fms "
+            "submitP99=%.2fms submitMax=%.3fms "
+            "gpuAvg=%.3fms gpuP50=%.2fms gpuP95=%.2fms gpuP99=%.2fms "
+            "gpuMax=%.3fms "
+            "drawableWaitAvg=%.3fms drawableWaitP50=%.2fms "
+            "drawableWaitP95=%.2fms drawableWaitP99=%.2fms "
+            "drawableWaitMax=%.3fms\n",
             (unsigned long long)submitted,
             (unsigned long long)completed,
             (unsigned long long)dropped,
+            (unsigned long long)stats.inflight_frames,
+            (unsigned long long)stats.inflight_frames_max,
+            submitSamples ? submitTotal / (double)submitSamples : 0.0,
+            tb_disp_histogram_percentile_delta(
+                stats.submit_time_histogram,
+                d->native_stats_previous.submit_time_histogram, 50),
+            tb_disp_histogram_percentile_delta(
+                stats.submit_time_histogram,
+                d->native_stats_previous.submit_time_histogram, 95),
+            tb_disp_histogram_percentile_delta(
+                stats.submit_time_histogram,
+                d->native_stats_previous.submit_time_histogram, 99),
+            stats.submit_time_ms_max,
             completed ? gpuTotal / (double)completed : 0.0,
-            stats.gpu_time_ms_max);
+            tb_disp_histogram_percentile_delta(
+                stats.gpu_time_histogram,
+                d->native_stats_previous.gpu_time_histogram, 50),
+            tb_disp_histogram_percentile_delta(
+                stats.gpu_time_histogram,
+                d->native_stats_previous.gpu_time_histogram, 95),
+            tb_disp_histogram_percentile_delta(
+                stats.gpu_time_histogram,
+                d->native_stats_previous.gpu_time_histogram, 99),
+            stats.gpu_time_ms_max,
+            drawableRequests ? drawableWaitTotal / (double)drawableRequests : 0.0,
+            tb_disp_histogram_percentile_delta(
+                stats.drawable_wait_histogram,
+                d->native_stats_previous.drawable_wait_histogram, 50),
+            tb_disp_histogram_percentile_delta(
+                stats.drawable_wait_histogram,
+                d->native_stats_previous.drawable_wait_histogram, 95),
+            tb_disp_histogram_percentile_delta(
+                stats.drawable_wait_histogram,
+                d->native_stats_previous.drawable_wait_histogram, 99),
+            stats.drawable_wait_ms_max);
     d->native_stats_previous = stats;
     d->native_stats_tick = now;
 }

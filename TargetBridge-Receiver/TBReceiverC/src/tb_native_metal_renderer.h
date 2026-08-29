@@ -9,12 +9,28 @@
 extern "C" {
 #endif
 
+/* Histograms retain 0.1 ms resolution through 51.2 ms. The final bucket is
+ * saturating; the exact maximum alongside each histogram preserves outliers. */
+#define TB_NATIVE_METAL_TIMING_BUCKETS 512
+#define TB_NATIVE_METAL_TIMING_BUCKET_MS 0.1
+
 struct tb_native_metal_stats {
     uint64_t submitted_frames;
     uint64_t completed_frames;
     uint64_t dropped_frames;
+    uint64_t drawable_requests;
+    uint64_t submit_samples;
+    uint64_t inflight_frames;
+    uint64_t inflight_frames_max;
     double   gpu_time_ms_total;
     double   gpu_time_ms_max;
+    double   drawable_wait_ms_total;
+    double   drawable_wait_ms_max;
+    double   submit_time_ms_total;
+    double   submit_time_ms_max;
+    uint64_t gpu_time_histogram[TB_NATIVE_METAL_TIMING_BUCKETS];
+    uint64_t drawable_wait_histogram[TB_NATIVE_METAL_TIMING_BUCKETS];
+    uint64_t submit_time_histogram[TB_NATIVE_METAL_TIMING_BUCKETS];
 };
 
 void *tb_native_metal_create(void);

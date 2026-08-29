@@ -10,6 +10,14 @@
 #include <stdio.h>
 #include <string.h>
 
+static size_t tb_native_metal_timing_bucket(double milliseconds) {
+    if (milliseconds <= 0.0) return 0;
+    size_t bucket = (size_t)(milliseconds / TB_NATIVE_METAL_TIMING_BUCKET_MS);
+    return bucket < TB_NATIVE_METAL_TIMING_BUCKETS
+        ? bucket
+        : TB_NATIVE_METAL_TIMING_BUCKETS - 1;
+}
+
 @interface TBNativeMetalView : NSView
 @end
 
@@ -397,6 +405,7 @@ static BOOL tb_pixel_buffer_uses_display_p3(CVPixelBufferRef pixelBuffer) {
             [self recordDrop];
             return 0;
         }
+        const CFTimeInterval submitStarted = CACurrentMediaTime();
 
         const size_t width = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0);
         const size_t height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0);
@@ -424,7 +433,19 @@ static BOOL tb_pixel_buffer_uses_display_p3(CVPixelBufferRef pixelBuffer) {
             return -1;
         }
 
+        const CFTimeInterval drawableStarted = CACurrentMediaTime();
         id<CAMetalDrawable> drawable = [_metalLayer nextDrawable];
+        const double drawableWaitMS =
+            (CACurrentMediaTime() - drawableStarted) * 1000.0;
+        os_unfair_lock_lock(&_statsLock);
+        _stats.drawable_requests++;
+        _stats.drawable_wait_ms_total += drawableWaitMS;
+        _stats.drawable_wait_histogram[
+            tb_native_metal_timing_bucket(drawableWaitMS)]++;
+        if (drawableWaitMS > _stats.drawable_wait_ms_max) {
+            _stats.drawable_wait_ms_max = drawableWaitMS;
+        }
+        os_unfair_lock_unlock(&_statsLock);
         if (!drawable) {
             CFRelease(lumaRef);
             CFRelease(chromaRef);
@@ -491,7 +512,12 @@ static BOOL tb_pixel_buffer_uses_display_p3(CVPixelBufferRef pixelBuffer) {
              * a narrow use-after-release race at shutdown. */
             os_unfair_lock_lock(&self->_statsLock);
             self->_stats.completed_frames++;
+            if (self->_stats.inflight_frames > 0) {
+                self->_stats.inflight_frames--;
+            }
             self->_stats.gpu_time_ms_total += gpuMS;
+            self->_stats.gpu_time_histogram[
+                tb_native_metal_timing_bucket(gpuMS)]++;
             if (gpuMS > self->_stats.gpu_time_ms_max) {
                 self->_stats.gpu_time_ms_max = gpuMS;
             }
@@ -501,8 +527,22 @@ static BOOL tb_pixel_buffer_uses_display_p3(CVPixelBufferRef pixelBuffer) {
 
         os_unfair_lock_lock(&_statsLock);
         _stats.submitted_frames++;
+        _stats.inflight_frames++;
+        if (_stats.inflight_frames > _stats.inflight_frames_max) {
+            _stats.inflight_frames_max = _stats.inflight_frames;
+        }
         os_unfair_lock_unlock(&_statsLock);
         [commandBuffer commit];
+        const double submitMS =
+            (CACurrentMediaTime() - submitStarted) * 1000.0;
+        os_unfair_lock_lock(&_statsLock);
+        _stats.submit_samples++;
+        _stats.submit_time_ms_total += submitMS;
+        _stats.submit_time_histogram[tb_native_metal_timing_bucket(submitMS)]++;
+        if (submitMS > _stats.submit_time_ms_max) {
+            _stats.submit_time_ms_max = submitMS;
+        }
+        os_unfair_lock_unlock(&_statsLock);
 
         if (!_loggedFirstFrame) {
             _loggedFirstFrame = YES;
