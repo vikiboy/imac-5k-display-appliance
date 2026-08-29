@@ -95,6 +95,195 @@ final class TBSenderAutomationParsingTests: XCTestCase {
         XCTAssertFalse(pacer.shouldEmit(presentationTime: CMTime(seconds: 1 + 1.0 / 75.0, preferredTimescale: 60_000)))
     }
 
+    func testDPCMProcessPoisonPermanentlyRefusesNewEncoderCreation() {
+        let state = TBDPCMEncoderProcessState()
+        var creationAttempts = 0
+
+        let first: Int? = state.createIfHealthy {
+            creationAttempts += 1
+            return 1
+        }
+        XCTAssertEqual(first, 1)
+        XCTAssertEqual(state.recordDrain(isQuarantined: false), .drained)
+        XCTAssertFalse(state.isPoisoned)
+
+        XCTAssertEqual(state.recordDrain(isQuarantined: true), .quarantined)
+        XCTAssertTrue(state.isPoisoned)
+        let refused: Int? = state.createIfHealthy {
+            creationAttempts += 1
+            return 2
+        }
+        XCTAssertNil(refused)
+        XCTAssertEqual(creationAttempts, 1)
+        XCTAssertNil(TBDPCMAsyncEncode(processState: state))
+    }
+
+    func testDPCMQuarantinePropagatesToOneShotServiceTermination() {
+        let state = TBDPCMEncoderProcessState()
+        XCTAssertFalse(state.claimTerminationIfPoisoned())
+
+        let drainStatus = state.recordDrain(isQuarantined: true)
+        let stopOutcome = TBVideoPipelineStopOutcome.resolve(
+            dpcmDrainStatus: drainStatus
+        )
+
+        XCTAssertEqual(drainStatus, .quarantined)
+        XCTAssertEqual(stopOutcome, .dpcmEncoderQuarantined)
+        XCTAssertTrue(stopOutcome.requiresProcessTermination)
+        XCTAssertTrue(state.claimTerminationIfPoisoned())
+        XCTAssertFalse(state.claimTerminationIfPoisoned())
+    }
+
+    func testCleanOrAbsentDPCMDrainDoesNotRequestProcessTermination() {
+        XCTAssertEqual(
+            TBVideoPipelineStopOutcome.resolve(dpcmDrainStatus: nil),
+            .stopped
+        )
+        XCTAssertEqual(
+            TBVideoPipelineStopOutcome.resolve(dpcmDrainStatus: .drained),
+            .stopped
+        )
+        XCTAssertFalse(TBVideoPipelineStopOutcome.stopped.requiresProcessTermination)
+    }
+
+    func testDPCMProgressWatchdogRecoversAfterSentFrameThenSustainedFailures() {
+        var watchdog = TBPostFirstFrameProgressWatchdog()
+        watchdog.reset(capturedFrames: 0, sentFrames: 0)
+
+        XCTAssertEqual(
+            watchdog.observe(
+                TBVideoPipelineProgressSnapshot(
+                    capturedFrames: 1,
+                    sentFrames: 1,
+                    monitorsDPCMProgress: true,
+                    terminalEncoderHealth: false
+                ),
+                hasDeliveredFirstFrame: true
+            ),
+            .none
+        )
+        XCTAssertEqual(
+            watchdog.observe(
+                TBVideoPipelineProgressSnapshot(
+                    capturedFrames: 7,
+                    sentFrames: 1,
+                    monitorsDPCMProgress: true,
+                    terminalEncoderHealth: false
+                ),
+                hasDeliveredFirstFrame: true
+            ),
+            .none
+        )
+        XCTAssertEqual(
+            watchdog.observe(
+                TBVideoPipelineProgressSnapshot(
+                    capturedFrames: 14,
+                    sentFrames: 1,
+                    monitorsDPCMProgress: true,
+                    terminalEncoderHealth: false
+                ),
+                hasDeliveredFirstFrame: true
+            ),
+            .tearDownPreservingCodec
+        )
+        XCTAssertEqual(
+            watchdog.observe(
+                TBVideoPipelineProgressSnapshot(
+                    capturedFrames: 30,
+                    sentFrames: 1,
+                    monitorsDPCMProgress: true,
+                    terminalEncoderHealth: false
+                ),
+                hasDeliveredFirstFrame: true
+            ),
+            .none,
+            "recovery is one-shot until a new capture pipeline resets the watchdog"
+        )
+    }
+
+    func testDPCMProgressWatchdogAcceptsHealthyStaticDesktop() {
+        var watchdog = TBPostFirstFrameProgressWatchdog()
+        watchdog.reset(capturedFrames: 20, sentFrames: 20)
+        for _ in 0..<10 {
+            XCTAssertEqual(
+                watchdog.observe(
+                    TBVideoPipelineProgressSnapshot(
+                        capturedFrames: 20,
+                        sentFrames: 20,
+                        monitorsDPCMProgress: true,
+                        terminalEncoderHealth: false
+                    ),
+                    hasDeliveredFirstFrame: true
+                ),
+                .none
+            )
+        }
+    }
+
+    func testDPCMProgressWatchdogAcceptsBackpressureAndFramePacingWithProgress() {
+        var watchdog = TBPostFirstFrameProgressWatchdog()
+        watchdog.reset(capturedFrames: 1, sentFrames: 1)
+
+        // One active poll without a send is ordinary bounded backpressure.
+        XCTAssertEqual(
+            watchdog.observe(
+                TBVideoPipelineProgressSnapshot(
+                    capturedFrames: 8,
+                    sentFrames: 1,
+                    monitorsDPCMProgress: true,
+                    terminalEncoderHealth: false
+                ),
+                hasDeliveredFirstFrame: true
+            ),
+            .none
+        )
+        // Any sent progress clears that evidence, even when pacing drops many
+        // of the captured frames.
+        XCTAssertEqual(
+            watchdog.observe(
+                TBVideoPipelineProgressSnapshot(
+                    capturedFrames: 14,
+                    sentFrames: 2,
+                    monitorsDPCMProgress: true,
+                    terminalEncoderHealth: false
+                ),
+                hasDeliveredFirstFrame: true
+            ),
+            .none
+        )
+        XCTAssertEqual(
+            watchdog.observe(
+                TBVideoPipelineProgressSnapshot(
+                    capturedFrames: 90,
+                    sentFrames: 62,
+                    monitorsDPCMProgress: true,
+                    terminalEncoderHealth: false
+                ),
+                hasDeliveredFirstFrame: true
+            ),
+            .none
+        )
+    }
+
+    func testDPCMProgressWatchdogTerminalHealthIsImmediateAndOneShot() {
+        var watchdog = TBPostFirstFrameProgressWatchdog()
+        watchdog.reset(capturedFrames: 1, sentFrames: 1)
+        let terminal = TBVideoPipelineProgressSnapshot(
+            capturedFrames: 1,
+            sentFrames: 1,
+            monitorsDPCMProgress: true,
+            terminalEncoderHealth: true
+        )
+        XCTAssertEqual(
+            watchdog.observe(terminal, hasDeliveredFirstFrame: true),
+            .terminatePoisonedProcess
+        )
+        XCTAssertEqual(
+            watchdog.observe(terminal, hasDeliveredFirstFrame: true),
+            .none
+        )
+    }
+
     func testSenderEnabledFlagUsesSelectedHomeDirectory() {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("targetbridge-automation-path-test", isDirectory: true)
@@ -133,17 +322,29 @@ final class TBSenderAutomationParsingTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
-    func testCaptureFailureRemovesAutomaticReconnectMarker() throws {
+    func testTransientCaptureFailurePreservesAutomaticReconnectMarker() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("targetbridge-capture-stop-\(UUID().uuidString)", isDirectory: true)
         let marker = root.appendingPathComponent("enabled")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         XCTAssertTrue(FileManager.default.createFile(atPath: marker.path, contents: Data()))
 
-        TBSenderAutomation.suspendAutomaticReconnectAfterCaptureFailure(enabledFlagURL: marker)
+        TBSenderAutomation.preserveAutomaticReconnectAfterTransientCaptureFailure(
+            enabledFlagURL: marker
+        )
 
-        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
         try? FileManager.default.removeItem(at: root)
+    }
+
+    func testAutomaticReconnectRetryBackoffIsBounded() {
+        XCTAssertEqual(TBSenderAutomation.automaticReconnectRetryDelaySeconds(consecutiveFailures: -1), 2)
+        XCTAssertEqual(TBSenderAutomation.automaticReconnectRetryDelaySeconds(consecutiveFailures: 0), 2)
+        XCTAssertEqual(TBSenderAutomation.automaticReconnectRetryDelaySeconds(consecutiveFailures: 1), 2)
+        XCTAssertEqual(TBSenderAutomation.automaticReconnectRetryDelaySeconds(consecutiveFailures: 2), 4)
+        XCTAssertEqual(TBSenderAutomation.automaticReconnectRetryDelaySeconds(consecutiveFailures: 3), 8)
+        XCTAssertEqual(TBSenderAutomation.automaticReconnectRetryDelaySeconds(consecutiveFailures: 4), 15)
+        XCTAssertEqual(TBSenderAutomation.automaticReconnectRetryDelaySeconds(consecutiveFailures: Int.max), 15)
     }
 
     func testAutomationFlagsEnableOnPresenceOrTruthyValues() {
@@ -156,6 +357,62 @@ final class TBSenderAutomationParsingTests: XCTestCase {
         XCTAssertFalse(TBSenderAutomation.flagEnabled(nil))
         for value in ["0", "false", "FALSE", "no", "off", " Off "] {
             XCTAssertFalse(TBSenderAutomation.flagEnabled(value), "value \(value)")
+        }
+    }
+
+    func testContinuousConnectStartsRetryLoopOnlyWithScreenCapturePermission() {
+        XCTAssertEqual(
+            TBSenderAutomation.continuousConnectPermissionAction(screenCaptureGranted: true),
+            .startRetryLoop
+        )
+        XCTAssertEqual(
+            TBSenderAutomation.continuousConnectPermissionAction(screenCaptureGranted: false),
+            .requestOnceAndSuspend
+        )
+    }
+
+    func testPinnedConnectionPathsDoNotRunThroughputProbeOnEveryReconnect() {
+        for preference in [
+            TBConnectionPathPreference.thunderbolt,
+            .usb,
+            .ethernet,
+            .wifi,
+        ] {
+            XCTAssertFalse(
+                TBSenderAutomation.requiresComparativePathProbe(preference),
+                "pinned \(preference.rawValue) path"
+            )
+        }
+    }
+
+    func testComparativeConnectionPathsStillMeasureCandidates() {
+        XCTAssertTrue(
+            TBSenderAutomation.requiresComparativePathProbe(.automatic)
+        )
+        XCTAssertTrue(
+            TBSenderAutomation.requiresComparativePathProbe(.wired)
+        )
+    }
+
+    func testAutomationAudioOmissionPreservesSessionSetting() {
+        XCTAssertNil(TBSenderAutomation.parseAudioEnabled(nil))
+    }
+
+    func testAutomationAudioExplicitFalseDisablesAudio() {
+        for value in ["0", "false", "FALSE", "no", "off", " Off "] {
+            XCTAssertEqual(TBSenderAutomation.parseAudioEnabled(value), false, "value \(value)")
+        }
+    }
+
+    func testAutomationAudioTruthyValuesEnableAudio() {
+        for value in ["1", "true", "TRUE", "yes", "on", " On "] {
+            XCTAssertEqual(TBSenderAutomation.parseAudioEnabled(value), true, "value \(value)")
+        }
+    }
+
+    func testAutomationAudioInvalidValuesPreserveSessionSetting() {
+        for value in ["", "unexpected", "2"] {
+            XCTAssertNil(TBSenderAutomation.parseAudioEnabled(value), "value \(value)")
         }
     }
 
@@ -225,6 +482,7 @@ final class TBSenderAutomationParsingTests: XCTestCase {
         XCTAssertEqual(TBSenderAutomation.parsePreset("imac4k"), .retina4k60)
         XCTAssertEqual(TBSenderAutomation.parsePreset("5k60"), .native5k60Experimental)
         XCTAssertEqual(TBSenderAutomation.parsePreset("native5k60"), .native5k60Experimental)
+        XCTAssertEqual(TBSenderAutomation.parsePreset("5kraw60"), .native5k60Experimental)
         XCTAssertEqual(TBSenderAutomation.parsePreset("5k"), .native5k)
         XCTAssertEqual(TBSenderAutomation.parsePreset("5K"), .native5k, "aliases are case-insensitive")
         XCTAssertEqual(TBSenderAutomation.parsePreset("native"), .native5k)

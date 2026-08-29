@@ -11,6 +11,18 @@ import Network
 @preconcurrency import ScreenCaptureKit
 import VideoToolbox
 
+enum TBMonitorCodecLabel {
+    static func resolve(
+        usesDPCM: Bool,
+        usesRawNV12: Bool,
+        encodedCodecName: String
+    ) -> String {
+        if usesDPCM { return "DPCM 8-bit" }
+        if usesRawNV12 { return "NV12 RAW" }
+        return encodedCodecName
+    }
+}
+
 enum TBDisplayCapturePreset: String, CaseIterable, Identifiable {
     case standard1440p
     case smooth1440p60
@@ -393,10 +405,14 @@ private final class TBDirectDisplayStreamCapture {
     }
 
     func start(displayID: CGDirectDisplayID, preset: TBDisplayCapturePreset, showCursor: Bool) -> Bool {
+        guard let displayP3 = CGColorSpace(name: CGColorSpace.displayP3) else {
+            return false
+        }
         let properties: NSDictionary = [
             CGDisplayStream.showCursor: showCursor,
             CGDisplayStream.queueDepth: preset.queueDepth,
-            CGDisplayStream.minimumFrameTime: 1.0 / Double(preset.expectedFrameRate)
+            CGDisplayStream.minimumFrameTime: 1.0 / Double(preset.expectedFrameRate),
+            CGDisplayStream.colorSpace: displayP3
         ]
 
         let displayStream = CGDisplayStream(
@@ -445,6 +461,100 @@ private final class TBDirectDisplayStreamCapture {
     }
 }
 
+enum TBVideoPipelineStopOutcome: Equatable {
+    case stopped
+    case dpcmEncoderQuarantined
+
+    static func resolve(dpcmDrainStatus: TBDPCMDrainStatus?) -> Self {
+        dpcmDrainStatus == .quarantined ? .dpcmEncoderQuarantined : .stopped
+    }
+
+    var requiresProcessTermination: Bool {
+        self == .dpcmEncoderQuarantined
+    }
+}
+
+struct TBVideoPipelineProgressSnapshot: Equatable {
+    let capturedFrames: Int
+    let sentFrames: Int
+    let monitorsDPCMProgress: Bool
+    let terminalEncoderHealth: Bool
+}
+
+enum TBPostFirstFrameProgressDecision: Equatable {
+    case none
+    case tearDownPreservingCodec
+    case terminatePoisonedProcess
+}
+
+/// Detects active capture whose encoded delivery stopped after the first frame.
+/// Polling is intentionally evidence-based rather than a wall-clock liveness
+/// test: an event-driven capture source can legitimately produce no frames on a
+/// static desktop. Two consecutive active polls and twelve captured frames with
+/// no sent progress distinguish a sustained encoder failure from one interval
+/// of pacing or bounded backpressure.
+struct TBPostFirstFrameProgressWatchdog {
+    static let minimumCapturedFramesWithoutSend = 12
+    static let requiredConsecutiveActiveChecks = 2
+
+    private var lastCapturedFrames = 0
+    private var lastSentFrames = 0
+    private var capturedWithoutSend = 0
+    private var consecutiveActiveChecks = 0
+    private var recoveryIssued = false
+
+    mutating func reset(capturedFrames: Int = 0, sentFrames: Int = 0) {
+        lastCapturedFrames = capturedFrames
+        lastSentFrames = sentFrames
+        capturedWithoutSend = 0
+        consecutiveActiveChecks = 0
+        recoveryIssued = false
+    }
+
+    mutating func observe(
+        _ snapshot: TBVideoPipelineProgressSnapshot,
+        hasDeliveredFirstFrame: Bool
+    ) -> TBPostFirstFrameProgressDecision {
+        let capturedDelta = max(0, snapshot.capturedFrames - lastCapturedFrames)
+        let sentDelta = max(0, snapshot.sentFrames - lastSentFrames)
+        lastCapturedFrames = snapshot.capturedFrames
+        lastSentFrames = snapshot.sentFrames
+
+        guard snapshot.monitorsDPCMProgress, hasDeliveredFirstFrame else {
+            capturedWithoutSend = 0
+            consecutiveActiveChecks = 0
+            return .none
+        }
+        guard !recoveryIssued else { return .none }
+
+        if snapshot.terminalEncoderHealth {
+            recoveryIssued = true
+            return .terminatePoisonedProcess
+        }
+        if sentDelta > 0 {
+            capturedWithoutSend = 0
+            consecutiveActiveChecks = 0
+            return .none
+        }
+        guard capturedDelta > 0 else {
+            /* No new capture evidence means a legitimate static desktop, not
+             * an encoder stall. Break consecutiveness without inventing time. */
+            capturedWithoutSend = 0
+            consecutiveActiveChecks = 0
+            return .none
+        }
+
+        capturedWithoutSend += capturedDelta
+        consecutiveActiveChecks += 1
+        if capturedWithoutSend >= Self.minimumCapturedFramesWithoutSend,
+           consecutiveActiveChecks >= Self.requiredConsecutiveActiveChecks {
+            recoveryIssued = true
+            return .tearDownPreservingCodec
+        }
+        return .none
+    }
+}
+
 /// Owns the capture→encode→send video pipeline and runs it entirely on a
 /// dedicated serial queue, off the main thread. SwiftUI layout (or any other
 /// main-thread work) therefore cannot stall frame delivery. All mutable encode
@@ -459,12 +569,16 @@ private final class TBVideoPipeline: @unchecked Sendable {
     private let connection: NWConnection
     private let displayName: String
     private let displayID: CGDirectDisplayID
+    private let usesDPCM: Bool
     private let usesRawNV12: Bool
+    private let rawMaxPendingVideoPackets: Int
+    private let dpcmMaxPipelineFrames = 3
     private let onFirstFrame: @Sendable () -> Void
 
     // Confined to `queue`.
     private var vtEncoder: VTCompressionSession?
     private var vtEncoderRef: Unmanaged<TBVideoPipeline>?
+    private var dpcmEncoder: TBDPCMAsyncEncode?
     private var pendingVideoPackets = 0
     private var inFlightEncodeFrames = 0
     private var displayStreamFrameSequence: CMTimeValue = 0
@@ -487,6 +601,7 @@ private final class TBVideoPipeline: @unchecked Sendable {
          connection: NWConnection,
          displayName: String,
          displayID: CGDirectDisplayID,
+         usesDPCM: Bool,
          usesRawNV12: Bool,
          ackAlreadySent: Bool,
          onFirstFrame: @escaping @Sendable () -> Void) {
@@ -495,7 +610,15 @@ private final class TBVideoPipeline: @unchecked Sendable {
         self.connection = connection
         self.displayName = displayName
         self.displayID = displayID
+        self.usesDPCM = usesDPCM
         self.usesRawNV12 = usesRawNV12
+        let rawPendingOverride = ProcessInfo.processInfo.environment["RAW_PENDING"]
+            .flatMap(Int.init)
+        // RAW mode is already diagnostic-only. Two in-flight sends are the
+        // measured minimum needed to overlap capture with a 22 MB network
+        // write at 5K60; keep the override hard-bounded so experiments can
+        // compare one slot without allowing a latency-growing frame queue.
+        self.rawMaxPendingVideoPackets = min(max(rawPendingOverride ?? 2, 1), 2)
         self.frameRatePacer = TBFrameRatePacer(maximumFrameRate: preset.expectedFrameRate)
         self.ackSent = ackAlreadySent
         self.onFirstFrame = onFirstFrame
@@ -507,6 +630,16 @@ private final class TBVideoPipeline: @unchecked Sendable {
     /// could not be created.
     func start() -> Bool {
         queue.sync {
+            if usesDPCM {
+                guard let encoder = TBDPCMAsyncEncode() else {
+                    NSLog("TargetBridge DPCM: unable to create GPU encoder")
+                    return false
+                }
+                dpcmEncoder = encoder
+                running = true
+                NSLog("TargetBridge DPCM: GPU encoder ready device=%@", encoder.deviceName)
+                return true
+            }
             if usesRawNV12 {
                 running = true
                 return true
@@ -520,13 +653,25 @@ private final class TBVideoPipeline: @unchecked Sendable {
     /// Tears the encoder down on `queue`. Because the queue is serial, any
     /// in-flight `encode` completes before `VTCompressionSessionInvalidate`,
     /// so a frame can never encode into an invalidated session.
-    func stop() {
+    @discardableResult
+    func stop() -> TBVideoPipelineStopOutcome {
         queue.sync {
             running = false
+            var dpcmDrainStatus: TBDPCMDrainStatus?
+            if let dpcmEncoder {
+                // Callbacks copy their packet and enqueue pipeline work with
+                // queue.async. They never queue.sync back here, so draining on
+                // the pipeline queue cannot deadlock.
+                dpcmDrainStatus = dpcmEncoder.drain()
+                self.dpcmEncoder = nil
+            }
             if let encoder = vtEncoder { VTCompressionSessionInvalidate(encoder) }
             vtEncoder = nil
             vtEncoderRef?.release()
             vtEncoderRef = nil
+            return TBVideoPipelineStopOutcome.resolve(
+                dpcmDrainStatus: dpcmDrainStatus
+            )
         }
     }
 
@@ -540,6 +685,20 @@ private final class TBVideoPipeline: @unchecked Sendable {
     var lastCaptureFrameAtSnapshot: Date {
         lock.lock(); defer { lock.unlock() }
         return _lastCaptureFrameAt
+    }
+
+    func progressSnapshot() -> TBVideoPipelineProgressSnapshot {
+        queue.sync {
+            lock.lock()
+            let sent = _sentFrames
+            lock.unlock()
+            return TBVideoPipelineProgressSnapshot(
+                capturedFrames: capturedFrames,
+                sentFrames: sent,
+                monitorsDPCMProgress: usesDPCM,
+                terminalEncoderHealth: usesDPCM && TBDPCMEncoderProcessState.shared.isPoisoned
+            )
+        }
     }
 
     func diagnosticsSnapshot() -> (pending: Int, inFlight: Int, ptsSeq: CMTimeValue, captured: Int, droppedPacing: Int, droppedPre: Int, droppedPost: Int) {
@@ -634,9 +793,29 @@ private final class TBVideoPipeline: @unchecked Sendable {
     /// SCStream capture path. Must be dispatched onto `queue` by the caller.
     func encode(_ sampleBuffer: CMSampleBuffer) {
         markCaptureFrame()
+        defer {
+            if usesRawNV12, capturedFrames.isMultiple(of: 600) {
+                lock.lock()
+                let sent = _sentFrames
+                lock.unlock()
+                NSLog(
+                    "TargetBridge RAW: captured=%d sent=%d droppedPacing=%d droppedBackpressure=%d pending=%d pendingLimit=%d",
+                    capturedFrames,
+                    sent,
+                    droppedByFrameRatePacer,
+                    droppedBeforeEncodeFrames,
+                    pendingVideoPackets,
+                    rawMaxPendingVideoPackets
+                )
+            }
+        }
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard frameRatePacer.shouldEmit(presentationTime: pts) else {
             droppedByFrameRatePacer += 1
+            return
+        }
+        if usesDPCM {
+            sendDPCMFrame(sampleBuffer)
             return
         }
         if usesRawNV12 {
@@ -659,7 +838,7 @@ private final class TBVideoPipeline: @unchecked Sendable {
     /// `TBDirectDisplayStreamCapture`.
     func encodeDisplaySurface(_ surface: IOSurfaceRef, displayTime: UInt64) {
         markCaptureFrame()
-        guard running, let encoder = vtEncoder else { return }
+        guard running else { return }
 
         var pts = displayTime != 0
             ? CMClockMakeHostTimeFromSystemUnits(displayTime)
@@ -672,13 +851,6 @@ private final class TBVideoPipeline: @unchecked Sendable {
             droppedByFrameRatePacer += 1
             return
         }
-        if preset.dropsBeforeEncodeWhenBacklogged,
-           (pendingVideoPackets >= preset.maxPendingVideoPackets ||
-            inFlightEncodeFrames >= preset.maxInFlightEncodeFrames) {
-            droppedBeforeEncodeFrames += 1
-            return
-        }
-
         let attrs: NSDictionary = [
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey: preset.width,
@@ -696,6 +868,18 @@ private final class TBVideoPipeline: @unchecked Sendable {
         }
         let pixelBuffer = unmanagedPixelBuffer.takeRetainedValue()
 
+        if usesDPCM {
+            sendDPCMFrame(pixelBuffer)
+            return
+        }
+        guard let encoder = vtEncoder else { return }
+        if preset.dropsBeforeEncodeWhenBacklogged,
+           (pendingVideoPackets >= preset.maxPendingVideoPackets ||
+            inFlightEncodeFrames >= preset.maxInFlightEncodeFrames) {
+            droppedBeforeEncodeFrames += 1
+            return
+        }
+
         displayStreamFrameSequence += 1
         // Derive PTS from the frame's actual capture time. CGDisplayStream
         // delivers frames irregularly (event-driven on screen changes), so a
@@ -704,6 +888,88 @@ private final class TBVideoPipeline: @unchecked Sendable {
         // in mach-absolute units, the same host clock the SCStream path uses.
         lastEncodedDisplayPTS = pts
         encode(pixelBuffer: pixelBuffer, presentationTimeStamp: pts, using: encoder)
+    }
+
+    private func sendDPCMFrame(_ sampleBuffer: CMSampleBuffer) {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            droppedBeforeEncodeFrames += 1
+            return
+        }
+        submitDPCM(pixelBuffer: pixelBuffer) { [dpcmEncoder] completion in
+            guard let dpcmEncoder else { return false }
+            return dpcmEncoder.submit(sampleBuffer: sampleBuffer, completion: completion)
+        }
+    }
+
+    private func sendDPCMFrame(_ pixelBuffer: CVPixelBuffer) {
+        submitDPCM(pixelBuffer: pixelBuffer) { [dpcmEncoder] completion in
+            guard let dpcmEncoder else { return false }
+            return dpcmEncoder.submit(pixelBuffer: pixelBuffer, completion: completion)
+        }
+    }
+
+    /// Keep the total number of GPU jobs plus socket writes bounded to the
+    /// encoder's three reusable job slots. Every counter mutation happens on
+    /// `queue`; callbacks only enqueue asynchronously onto it.
+    private func submitDPCM(
+        pixelBuffer: CVPixelBuffer,
+        submit: (@escaping @Sendable (Data?) -> Void) -> Bool
+    ) {
+        guard running, dpcmEncoder != nil,
+              CVPixelBufferGetWidth(pixelBuffer) == preset.width,
+              CVPixelBufferGetHeight(pixelBuffer) == preset.height,
+              pendingVideoPackets + inFlightEncodeFrames < dpcmMaxPipelineFrames
+        else {
+            droppedBeforeEncodeFrames += 1
+            return
+        }
+
+        inFlightEncodeFrames += 1
+        let accepted = submit { [weak self] packet in
+            guard let self else { return }
+            self.queue.async {
+                self.inFlightEncodeFrames = max(0, self.inFlightEncodeFrames - 1)
+                guard self.running, let packet else {
+                    self.droppedAfterEncodeFrames += 1
+                    return
+                }
+                self.sendDPCMPacket(packet)
+            }
+        }
+        if !accepted {
+            inFlightEncodeFrames = max(0, inFlightEncodeFrames - 1)
+            droppedBeforeEncodeFrames += 1
+        }
+    }
+
+    private func sendDPCMPacket(_ packet: Data) {
+        guard running else { return }
+        guard pendingVideoPackets < dpcmMaxPipelineFrames else {
+            droppedAfterEncodeFrames += 1
+            return
+        }
+
+        if !ackSent {
+            ackSent = true
+            let ack = TBMonitorCreateSessionAck(
+                accepted: true,
+                displayName: displayName,
+                displayID: displayID
+            )
+            if let ackPacket = TBMonitorProtocol.makeJSONPacket(type: .createSessionAck, value: ack) {
+                connection.send(content: ackPacket, completion: .contentProcessed({ _ in }))
+            }
+            onFirstFrame()
+        }
+
+        pendingVideoPackets += 1
+        connection.send(content: packet, completion: .contentProcessed({ [weak self] _ in
+            guard let self else { return }
+            self.queue.async {
+                self.pendingVideoPackets = max(0, self.pendingVideoPackets - 1)
+            }
+        }))
+        lock.lock(); _sentFrames += 1; lock.unlock()
     }
 
     private func encode(pixelBuffer: CVPixelBuffer, presentationTimeStamp pts: CMTime, using encoder: VTCompressionSession) {
@@ -774,7 +1040,7 @@ private final class TBVideoPipeline: @unchecked Sendable {
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
         else { return }
         // Backpressure: never pile frames on top of a network that can't keep up.
-        if pendingVideoPackets >= 1 {
+        if pendingVideoPackets >= rawMaxPendingVideoPackets {
             droppedBeforeEncodeFrames += 1
             return
         }
@@ -838,16 +1104,28 @@ private final class TBVideoPipeline: @unchecked Sendable {
             onFirstFrame()
         }
 
-        var payload = Data(capacity: 17 + ySize + uvSize)
-        payload.append(1) // format: NV12
-        TBMonitorProtocol.appendBE32(&payload, UInt32(width))
-        TBMonitorProtocol.appendBE32(&payload, UInt32(height))
-        TBMonitorProtocol.appendBE32(&payload, UInt32(yStride))
-        TBMonitorProtocol.appendBE32(&payload, UInt32(uvStride))
-        payload.append(UnsafeBufferPointer(start: yBase.assumingMemoryBound(to: UInt8.self), count: ySize))
-        payload.append(UnsafeBufferPointer(start: uvBase.assumingMemoryBound(to: UInt8.self), count: uvSize))
+        // Build framing and planes into one allocation. Going through
+        // makePacket(payload:) would copy this ~22 MB 5K frame into a second
+        // Data value before every send (about 1.3 GB/s of avoidable copying at
+        // 60 Hz).
+        let rawPayloadSize = 17 + ySize + uvSize
+        var packet = Data(capacity: 5 + rawPayloadSize)
+        TBMonitorProtocol.appendBE32(&packet, UInt32(1 + rawPayloadSize))
+        packet.append(TBMonitorPacketType.rawFrame.rawValue)
+        packet.append(1) // format: NV12
+        TBMonitorProtocol.appendBE32(&packet, UInt32(width))
+        TBMonitorProtocol.appendBE32(&packet, UInt32(height))
+        TBMonitorProtocol.appendBE32(&packet, UInt32(yStride))
+        TBMonitorProtocol.appendBE32(&packet, UInt32(uvStride))
+        packet.append(UnsafeBufferPointer(
+            start: yBase.assumingMemoryBound(to: UInt8.self),
+            count: ySize
+        ))
+        packet.append(UnsafeBufferPointer(
+            start: uvBase.assumingMemoryBound(to: UInt8.self),
+            count: uvSize
+        ))
 
-        let packet = TBMonitorProtocol.makePacket(type: .rawFrame, payload: payload)
         pendingVideoPackets += 1
         connection.send(content: packet, completion: .contentProcessed({ [weak self] _ in
             guard let self else { return }
@@ -1269,6 +1547,12 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
     private var firstFrameTimer: Timer?
     private var cursorTimer: Timer?
     private var connectTimeoutWorkItem: DispatchWorkItem?
+    /// TCP readiness only proves that a socket opened. The receiver still has
+    /// to identify itself with a display profile before this can become a
+    /// monitor session. Keep that negotiation bounded independently so a
+    /// stale/auxiliary peer cannot leave automatic appliance mode falsely
+    /// "connected" forever.
+    private var displayProfileTimeoutWorkItem: DispatchWorkItem?
     /// Name of the local interface the current connect attempt is bound to
     /// (e.g. "bridge0"), resolved when dialing. Diagnostic context only.
     private var connectInterfaceName: String?
@@ -1307,6 +1591,7 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
     nonisolated(unsafe) private var displayReconfigurationCallbackRegistered = false
     private var verboseLoggingTimer: Timer?
     private var captureHealthWatchdog: Timer?
+    private var postFirstFrameProgressWatchdog = TBPostFirstFrameProgressWatchdog()
 
     nonisolated(unsafe) private static let displayReconfigurationCallback: CGDisplayReconfigurationCallBack = { displayID, flags, userInfo in
         guard let userInfo else { return }
@@ -1322,6 +1607,167 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         var onFrame: ((CMSampleBuffer) -> Void)?
         var onAudio: ((CMSampleBuffer) -> Void)?
         var onError: ((Error) -> Void)?
+        var expectedDisplayID: CGDirectDisplayID = kCGNullDirectDisplay
+        var captureDisplayID: CGDirectDisplayID = kCGNullDirectDisplay
+        var requiresRasterExactCapture = false
+        var expectedPixelWidth = 0
+        var expectedPixelHeight = 0
+        private var didLogFirstCompleteScreenFrame = false
+        private var didLogIncompleteProofMetadata = false
+        private var didFailRasterGate = false
+
+        private static func number(_ value: Any?) -> Double? {
+            if let value = value as? CGFloat { return Double(value) }
+            if let value = value as? Double { return value }
+            return (value as? NSNumber)?.doubleValue
+        }
+
+        private static func contentRect(_ value: Any?) -> CGRect? {
+            if let rect = value as? CGRect { return rect }
+            guard let dictionary = value as? NSDictionary else { return nil }
+            return CGRect(dictionaryRepresentation: dictionary as CFDictionary)
+        }
+
+        private static func approximatelyEqual(
+            _ left: Double,
+            _ right: Double,
+            tolerance: Double = 0.001
+        ) -> Bool {
+            abs(left - right) <= tolerance
+        }
+
+        private func rasterGateAllows(_ sampleBuffer: CMSampleBuffer) -> Bool {
+            guard requiresRasterExactCapture else { return true }
+            guard let attachmentArray = CMSampleBufferGetSampleAttachmentsArray(
+                    sampleBuffer,
+                    createIfNecessary: false
+                  ) as? [[SCStreamFrameInfo: Any]],
+                  let attachments = attachmentArray.first,
+                  let rawStatus = attachments[SCStreamFrameInfo.status] as? Int,
+                  SCFrameStatus(rawValue: rawStatus) == .complete,
+                  let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
+            else {
+                return false
+            }
+
+            guard let contentRect = Self.contentRect(
+                    attachments[SCStreamFrameInfo.contentRect]
+                  ),
+                  let scaleFactor = Self.number(
+                    attachments[SCStreamFrameInfo.scaleFactor]
+                  ),
+                  let contentScale = Self.number(
+                    attachments[SCStreamFrameInfo.contentScale]
+                  )
+            else {
+                if !didLogIncompleteProofMetadata {
+                    didLogIncompleteProofMetadata = true
+                    NSLog(
+                        "[capture-proof] metadata=INCOMPLETE first complete frame " +
+                        "missing ScreenCaptureKit geometry metadata; waiting for a complete proof frame"
+                    )
+                }
+                return false
+            }
+
+            // This one-shot proof record is intentionally emitted before the
+            // frame enters the encoder. A 5120x2880 buffer alone is not enough:
+            // ScreenCaptureKit can scale content into a requested buffer. Keep
+            // the raw frame geometry alongside the active CG mode so a live
+            // acceptance test can prove full-display 2x capture with no crop,
+            // letterbox, or hidden rescale.
+            let mode = captureDisplayID == kCGNullDirectDisplay
+                ? nil
+                : CGDisplayCopyDisplayMode(captureDisplayID)
+            let modeText = mode.map {
+                let refresh = String(format: "%.2f", $0.refreshRate)
+                return "\($0.width)x\($0.height) points -> \($0.pixelWidth)x\($0.pixelHeight) pixels @\(refresh)Hz"
+            } ?? "unavailable"
+            let contentRectText = String(
+                format: "x=%.3f y=%.3f w=%.3f h=%.3f",
+                contentRect.origin.x,
+                contentRect.origin.y,
+                contentRect.size.width,
+                contentRect.size.height
+            )
+            let scaleFactorText = String(format: "%.6f", scaleFactor)
+            let contentScaleText = String(format: "%.6f", contentScale)
+            let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+            let bufferWidth = CVPixelBufferGetWidth(pixelBuffer)
+            let bufferHeight = CVPixelBufferGetHeight(pixelBuffer)
+            let primaries = CVBufferCopyAttachment(
+                pixelBuffer,
+                kCVImageBufferColorPrimariesKey,
+                nil
+            ) as? String ?? "missing"
+            let transfer = CVBufferCopyAttachment(
+                pixelBuffer,
+                kCVImageBufferTransferFunctionKey,
+                nil
+            ) as? String ?? "missing"
+
+            let rasterExact = mode.map {
+                expectedDisplayID != kCGNullDirectDisplay &&
+                expectedDisplayID == captureDisplayID &&
+                expectedPixelWidth > 0 &&
+                expectedPixelHeight > 0 &&
+                bufferWidth == expectedPixelWidth &&
+                bufferHeight == expectedPixelHeight &&
+                pixelFormat == kCVPixelFormatType_32BGRA &&
+                $0.pixelWidth == bufferWidth &&
+                $0.pixelHeight == bufferHeight &&
+                Self.approximatelyEqual(Double(contentRect.origin.x), 0) &&
+                Self.approximatelyEqual(Double(contentRect.origin.y), 0) &&
+                Self.approximatelyEqual(Double(contentRect.size.width), Double($0.width)) &&
+                Self.approximatelyEqual(Double(contentRect.size.height), Double($0.height)) &&
+                Self.approximatelyEqual(
+                    Double(contentRect.size.width) * scaleFactor,
+                    Double(bufferWidth)
+                ) &&
+                Self.approximatelyEqual(
+                    Double(contentRect.size.height) * scaleFactor,
+                    Double(bufferHeight)
+                ) &&
+                Self.approximatelyEqual(contentScale, 1.0)
+            } ?? false
+
+            if !didLogFirstCompleteScreenFrame || !rasterExact {
+                didLogFirstCompleteScreenFrame = true
+                NSLog(
+                    "[capture-proof] metadata=COMPLETE rasterExact=%d " +
+                    "expectedDisplay=%u captureDisplay=%u activeMode=%@ " +
+                    "expectedBuffer=%dx%d buffer=%zux%zu pixelFormat=0x%08x bgra=%d " +
+                    "scaleFactor=%@ contentScale=%@ contentRect={%@} " +
+                    "primaries=%@ transfer=%@",
+                    rasterExact ? 1 : 0,
+                    expectedDisplayID,
+                    captureDisplayID,
+                    modeText,
+                    expectedPixelWidth,
+                    expectedPixelHeight,
+                    bufferWidth,
+                    bufferHeight,
+                    pixelFormat,
+                    pixelFormat == kCVPixelFormatType_32BGRA ? 1 : 0,
+                    scaleFactorText,
+                    contentScaleText,
+                    contentRectText,
+                    primaries,
+                    transfer
+                )
+            }
+
+            if !rasterExact && !didFailRasterGate {
+                didFailRasterGate = true
+                onError?(NSError(
+                    domain: "TargetBridgeCapture",
+                    code: 3,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "lossless 5K capture failed the raster-exact geometry gate"]
+                ))
+            }
+            return rasterExact
+        }
 
         private static func shouldProcessFrame(_ sampleBuffer: CMSampleBuffer) -> Bool {
             guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
@@ -1351,6 +1797,7 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
             }
             guard type == .screen else { return }
             guard Self.shouldProcessFrame(sampleBuffer) else { return }
+            guard rasterGateAllows(sampleBuffer) else { return }
             onFrame?(sampleBuffer)
         }
 
@@ -1503,6 +1950,12 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         // interface (usually Wi-Fi), so an unscoped dial to a Thunderbolt
         // Bridge peer leaves via the wrong link and times out.
         let interfaces = TBConnectionDiagnostics.currentIPv4Interfaces()
+        let interfaceSummary = interfaces
+            .map { "\($0.name)=\($0.ip)" }
+            .joined(separator: ",")
+        TBLog.connection.info(
+            "connect: IPv4 interfaces=\(interfaceSummary, privacy: .public)"
+        )
         connectInterfaceName = TBConnectionDiagnostics.interfaceName(forLocalIP: localInterfaceIP, in: interfaces)
         let scopedHost = TBConnectionDiagnostics.scopedReceiverHost(
             receiverIP: receiverIP,
@@ -1539,6 +1992,7 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
                     self.sendBrightnessUpdate()
                     self.sendVolumeUpdate()
                     self.receiveLoop(on: conn)
+                    self.startDisplayProfileWatchdog(for: conn)
                 case .waiting(let error):
                     // The dial cannot proceed yet (no route, host down, cable
                     // unplugged, firewall drop, …). Record and log the real
@@ -1728,6 +2182,8 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         }
         connectTimeoutWorkItem?.cancel()
         connectTimeoutWorkItem = nil
+        displayProfileTimeoutWorkItem?.cancel()
+        displayProfileTimeoutWorkItem = nil
         heartbeatTimer?.invalidate()
         heartbeatTimer = nil
         firstFrameTimer?.invalidate()
@@ -1751,7 +2207,7 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         }
         captureDelegate = nil
         endCaptureActivity()
-        pipeline?.stop()
+        let pipelineStopOutcome = pipeline?.stop() ?? .stopped
         pipeline = nil
         releaseInjectedModifiersIfNeeded()
         remoteHeldModifierKeyCodes.removeAll()
@@ -1787,6 +2243,33 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         lastCursorPacket = nil
         captureDisplayText = TBDisplaySenderL10n.captureDisplayNotAvailable(language)
         displayStateText = TBDisplaySenderL10n.displayStateNotAvailable(language)
+        requestProcessRecoveryIfNeeded(
+            after: pipelineStopOutcome,
+            context: "full pipeline stop"
+        )
+    }
+
+    /// A quarantined C encoder intentionally survives Swift teardown because a
+    /// late Metal completion may still reach it. Once ordinary session cleanup
+    /// is complete, terminate the poisoned process exactly once; the installed
+    /// LaunchAgent's KeepAlive path can then start a clean process, and a manual
+    /// launch exits instead of accumulating another quarantined encoder.
+    @discardableResult
+    private func requestProcessRecoveryIfNeeded(
+        after outcome: TBVideoPipelineStopOutcome,
+        context: String
+    ) -> Bool {
+        guard outcome.requiresProcessTermination else { return false }
+        if TBDPCMEncoderProcessState.shared.claimTerminationIfPoisoned() {
+            NSLog(
+                "TargetBridge DPCM: quarantined encoder during %@; terminating poisoned process for recovery",
+                context
+            )
+            Task { @MainActor in
+                NSApp.terminate(nil)
+            }
+        }
+        return true
     }
 
     /// Stable per-receiver discriminator: the connection address when known
@@ -1890,6 +2373,19 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         let name = Host.current().localizedName ?? "MacBook"
         let preset = capturePreset
         let helloCodecType = resolvedCodecType(for: preset, profile: activeProfile)
+        // The first HELLO precedes the receiver capability profile. Report the
+        // requested wire transport then; the second HELLO, sent after profile
+        // negotiation, reports the capability-gated transport actually used.
+        let helloUsesDPCM = activeProfile.map { dpcmEnabled(for: $0) }
+            ?? dpcmRequestedByEnvironment()
+        let helloUsesRawNV12 = activeProfile.map {
+            !helloUsesDPCM && rawNV12Enabled(for: $0)
+        } ?? (!helloUsesDPCM && rawNV12RequestedByEnvironment())
+        let helloCodecName = TBMonitorCodecLabel.resolve(
+            usesDPCM: helloUsesDPCM,
+            usesRawNV12: helloUsesRawNV12,
+            encodedCodecName: codecName(for: helloCodecType)
+        )
         guard let packet = TBMonitorProtocol.makeJSONPacket(
             type: .helloReceiver,
             value: TBMonitorHelloReceiver(
@@ -1899,7 +2395,7 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
                 captureSource: captureSource.title(language),
                 captureWidth: preset.width,
                 captureHeight: preset.height,
-                codec: codecName(for: helloCodecType)
+                codec: helloCodecName
             )
         ) else { return }
         send(packet)
@@ -2439,6 +2935,8 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
               let profile = TBMonitorProtocol.decodeJSON(TBMonitorDisplayProfile.self, from: payload)
         else { return }
 
+        displayProfileTimeoutWorkItem?.cancel()
+        displayProfileTimeoutWorkItem = nil
         activeProfile = profile
         if let supportsHEVCDecode = profile.supportsHEVCDecode {
             receiverSupportsHEVCDecodeHint = supportsHEVCDecode
@@ -2500,6 +2998,14 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
                 identity: self.captureSource.virtualDisplayIdentity(receiverKey: receiverKey),
                 receiverKey: receiverKey
             ) else {
+                self.setStatus(.virtualDisplayCreationFailed)
+                self.stop(resetStatusTo: nil)
+                return
+            }
+            guard await self.session.waitForPreferredModeActivation() else {
+                TBLog.connection.error(
+                    "capture: refusing to start because the exact requested Retina backing mode did not activate"
+                )
                 self.setStatus(.virtualDisplayCreationFailed)
                 self.stop(resetStatusTo: nil)
                 return
@@ -2572,10 +3078,25 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
             }
 
             let preset = capturePreset
-            let usesRawNV12 = rawNV12Enabled(for: profile)
+            let dpcmRequired = dpcmRequestedByEnvironment()
+            guard !dpcmRequired || profile.supportsDPCM == true else {
+                setStatus(.captureDesktopError(
+                    "The receiver withdrew lossless DPCM capability; refusing a lower-quality fallback."
+                ))
+                TBLog.connection.error(
+                    "capture: DPCM was required but receiver capability is unavailable; refusing codec fallback"
+                )
+                return false
+            }
+            let usesDPCM = dpcmEnabled(for: profile)
+            let usesRawNV12 = !usesDPCM && rawNV12Enabled(for: profile)
             let codecType = resolvedCodecType(for: preset, profile: profile)
-            let codecName = usesRawNV12 ? "NV12 RAW" : codecName(for: codecType)
-            activeCodecType = usesRawNV12 ? nil : codecType
+            let codecName = TBMonitorCodecLabel.resolve(
+                usesDPCM: usesDPCM,
+                usesRawNV12: usesRawNV12,
+                encodedCodecName: self.codecName(for: codecType)
+            )
+            activeCodecType = (usesDPCM || usesRawNV12) ? nil : codecType
             activeCodecName = codecName
             guard let connection else { return false }
 
@@ -2589,6 +3110,7 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
                 connection: connection,
                 displayName: session.displayName,
                 displayID: session.displayID,
+                usesDPCM: usesDPCM,
                 usesRawNV12: usesRawNV12,
                 ackAlreadySent: sessionAckSent,
                 onFirstFrame: { [weak self] in
@@ -2597,7 +3119,7 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
             )
             guard pipeline.start() else { return false }
             self.pipeline = pipeline
-            TBLog.connection.info("capture: pipeline started preset=\(preset.rawValue, privacy: .public) source=\(String(describing: self.captureSource), privacy: .public) codec=\(codecName, privacy: .public) rawNV12=\(usesRawNV12, privacy: .public)")
+            TBLog.connection.info("capture: pipeline started preset=\(preset.rawValue, privacy: .public) source=\(String(describing: self.captureSource), privacy: .public) codec=\(codecName, privacy: .public) dpcm=\(usesDPCM, privacy: .public) rawNV12=\(usesRawNV12, privacy: .public)")
 
             let display: SCDisplay
             if captureSource == .desktopMirror {
@@ -2610,12 +3132,27 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
                     return false
                 }
             } else {
+                guard session.displayID != kCGNullDirectDisplay else {
+                    throw NSError(
+                        domain: "TargetBridgeCapture",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey:
+                            "extended capture has no receiver-backed virtual display ID"]
+                    )
+                }
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-                if session.displayID != kCGNullDirectDisplay,
-                   let targetDisplay = content.displays.first(where: { $0.displayID == session.displayID }) {
+                if let targetDisplay = content.displays.first(where: { $0.displayID == session.displayID }) {
                     display = targetDisplay
                 } else {
                     display = try await waitForCaptureDisplay()
+                }
+                guard display.displayID == session.displayID else {
+                    throw NSError(
+                        domain: "TargetBridgeCapture",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey:
+                            "ScreenCaptureKit selected display \(display.displayID), expected receiver-backed display \(session.displayID)"]
+                    )
                 }
             }
 
@@ -2627,7 +3164,18 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
             configuration.height = preset.height
             configuration.minimumFrameInterval = CMTime(value: 1, timescale: Int32(preset.captureRequestFrameRate))
             configuration.queueDepth = preset.queueDepth
-            configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            configuration.pixelFormat = usesDPCM
+                ? kCVPixelFormatType_32BGRA
+                : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            if usesDPCM {
+                // TBD2 preserves the packed RGB bytes but intentionally carries
+                // no per-frame color metadata. Make the wire contract explicit:
+                // 8-bit SDR Display P3 at capture and presentation.
+                configuration.colorSpaceName = CGColorSpace.displayP3
+                if #available(macOS 15.0, *) {
+                    configuration.captureDynamicRange = .SDR
+                }
+            }
             configuration.shouldBeOpaque = true
             configuration.showsCursor = !usesCursorOverlay
             configuration.scalesToFit = true
@@ -2645,6 +3193,11 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
             )
 
             let delegate = CaptureDelegate()
+            delegate.expectedDisplayID = session.displayID
+            delegate.captureDisplayID = display.displayID
+            delegate.requiresRasterExactCapture = usesDPCM
+            delegate.expectedPixelWidth = preset.width
+            delegate.expectedPixelHeight = preset.height
             delegate.onFrame = { sampleBuffer in
                 // ScreenCaptureKit already invokes this closure on pipeline.queue.
                 // Encode immediately so its IOSurface returns to WindowServer
@@ -2831,9 +3384,6 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
             if let display = content.displays.first(where: { $0.displayID == targetDisplayID }) {
                 return display
             }
-            if let display = content.displays.first(where: { !baselineDisplayIDs.contains($0.displayID) }) {
-                return display
-            }
             try await Task.sleep(nanoseconds: 250_000_000)
         }
 
@@ -2873,12 +3423,29 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         return onlineDisplayIDs().contains(displayID)
     }
 
+    /// DPCM is opt-in until sender and receiver hardware tests prove it safe as
+    /// a default. Older receivers never see its packet type because capability
+    /// advertisement and the environment switch are both required.
+    private func dpcmEnabled(for profile: TBMonitorDisplayProfile) -> Bool {
+        guard profile.supportsDPCM == true else { return false }
+        return dpcmRequestedByEnvironment()
+    }
+
+    private func dpcmRequestedByEnvironment() -> Bool {
+        guard let value = ProcessInfo.processInfo.environment["DPCM"]?.lowercased() else {
+            return false
+        }
+        return value == "1" || value == "true"
+    }
+
     /// RAW remains an explicit diagnostic-only transport until a selectable
     /// profile and sustained hardware tests prove it safe for normal sessions.
-    /// A Receiver must explicitly advertise support before the environment
-    /// override can enable it, so older builds never receive unknown frames.
     private func rawNV12Enabled(for profile: TBMonitorDisplayProfile) -> Bool {
         guard profile.supportsRawNV12 == true else { return false }
+        return rawNV12RequestedByEnvironment()
+    }
+
+    private func rawNV12RequestedByEnvironment() -> Bool {
         guard let value = ProcessInfo.processInfo.environment["RAW"]?.lowercased() else { return false }
         return value == "1" || value == "true"
     }
@@ -3315,6 +3882,14 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
 
     private func startCaptureWatchdog() {
         captureHealthWatchdog?.invalidate()
+        if let progress = pipeline?.progressSnapshot() {
+            postFirstFrameProgressWatchdog.reset(
+                capturedFrames: progress.capturedFrames,
+                sentFrames: progress.sentFrames
+            )
+        } else {
+            postFirstFrameProgressWatchdog.reset()
+        }
         captureHealthWatchdog = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.checkCaptureHealth()
@@ -3325,10 +3900,53 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
     private func stopCaptureWatchdog() {
         captureHealthWatchdog?.invalidate()
         captureHealthWatchdog = nil
+        postFirstFrameProgressWatchdog.reset()
     }
 
     private func checkCaptureHealth() {
         guard isStreaming, activeProfile != nil, !isRestartingCaptureAfterWake, let pipeline else { return }
+        let progress = pipeline.progressSnapshot()
+        switch postFirstFrameProgressWatchdog.observe(
+            progress,
+            hasDeliveredFirstFrame: sessionAckSent
+        ) {
+        case .none:
+            break
+        case .tearDownPreservingCodec:
+            NSLog(
+                "TargetBridge DPCM: progress watchdog tripped — captured=%d sent=%d; tearing down without codec downgrade",
+                progress.capturedFrames,
+                progress.sentFrames
+            )
+            TBSenderAutomation.preserveAutomaticReconnectAfterTransientCaptureFailure()
+            stop(
+                resetStatusTo: .captureError("DPCM delivery stopped after capture remained active"),
+                persistArrangement: false,
+                teardownReason: "sender_dpcm_progress_timeout"
+            )
+            return
+        case .terminatePoisonedProcess:
+            NSLog(
+                "TargetBridge DPCM: terminal encoder health detected by progress watchdog — captured=%d sent=%d",
+                progress.capturedFrames,
+                progress.sentFrames
+            )
+            stop(
+                resetStatusTo: .captureError("DPCM GPU encoder became unresponsive"),
+                persistArrangement: false,
+                teardownReason: "sender_dpcm_gpu_quarantine"
+            )
+            requestProcessRecoveryIfNeeded(
+                after: .dpcmEncoderQuarantined,
+                context: "post-first-frame progress watchdog"
+            )
+            return
+        }
+        /* After the first delivered frame, silence alone is not a failure:
+         * CGDisplayStream is event-driven and a static desktop can legitimately
+         * produce nothing. Only the captured-versus-sent evidence above may
+         * recover a post-first-frame session. */
+        guard !sessionAckSent else { return }
         let elapsed = Date().timeIntervalSince(pipeline.lastCaptureFrameAtSnapshot)
         guard elapsed >= 8.0 else { return }
         NSLog("TargetBridge: capture watchdog tripped — %.1fs since last frame, soft restart", elapsed)
@@ -3418,8 +4036,20 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         }
         captureDelegate = nil
         endCaptureActivity()
-        pipeline?.stop()
+        let pipelineStopOutcome = pipeline?.stop() ?? .stopped
         pipeline = nil
+        if pipelineStopOutcome.requiresProcessTermination {
+            stop(
+                resetStatusTo: .captureError("DPCM GPU encoder became unresponsive"),
+                persistArrangement: false,
+                teardownReason: "sender_dpcm_gpu_quarantine"
+            )
+            requestProcessRecoveryIfNeeded(
+                after: pipelineStopOutcome,
+                context: "soft capture restart"
+            )
+            return
+        }
         isStreaming = false
         liveMetrics.senderFPS = 0
         senderFPS = 0
@@ -3485,11 +4115,11 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
                 } else {
                     setStatus(.noFirstFrame)
                 }
-                TBSenderAutomation.suspendAutomaticReconnectAfterCaptureFailure()
+                TBSenderAutomation.preserveAutomaticReconnectAfterTransientCaptureFailure()
                 stop(
                     resetStatusTo: nil,
                     persistArrangement: false,
-                    teardownReason: "sender_user_stop"
+                    teardownReason: "sender_capture_first_frame_timeout"
                 )
             }
         }
@@ -3530,6 +4160,44 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         }
         
         connectTimeoutWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0, execute: workItem)
+    }
+
+    private func startDisplayProfileWatchdog(for expectedConnection: NWConnection) {
+        displayProfileTimeoutWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self, weak expectedConnection] in
+            Task { @MainActor [weak self, weak expectedConnection] in
+                guard let self,
+                      let expectedConnection,
+                      self.connection === expectedConnection,
+                      self.isConnected,
+                      self.activeProfile == nil
+                else { return }
+
+                let detail = TBConnectionDiagnostics.failureDetail(
+                    receiverHost: self.receiverIP,
+                    port: TBMonitorProtocol.port,
+                    localIP: self.localInterfaceIP,
+                    interfaceName: self.connectInterfaceName,
+                    transport: self.transportKind.rawValue,
+                    lastNetworkState: "TCP ready; display profile missing"
+                )
+                TBLog.connection.error(
+                    "connect: receiver profile timed out after TCP became ready — \(detail, privacy: .public)"
+                )
+                self.setStatus(.connectionFailed(
+                    "Receiver did not provide a display profile within 5 seconds — \(detail)"
+                ))
+                self.stop(
+                    resetStatusTo: nil,
+                    persistArrangement: false,
+                    teardownReason: "sender_profile_timeout"
+                )
+            }
+        }
+
+        displayProfileTimeoutWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0, execute: workItem)
     }
 

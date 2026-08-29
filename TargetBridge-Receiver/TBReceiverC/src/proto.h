@@ -24,6 +24,10 @@
  *   a throughput diagnostic, not a P3-fidelity mode.
  *   (see handle_raw_frame in main.c; sender-side sendRawFrame)
  *
+ * type 0x25 = whole-frame lossless 4:4:4 tile-DPCM
+ *   payload = one opaque TBD2 blob (see TargetBridge-Shared/codec/tb_dpcm.h)
+ *   Only sent when the receiver profile advertises supportsDPCM=true.
+ *
  * type 0x30 = heartbeat (JSON)
  * type 0x31 = teardown (JSON)
  * type 0x32 = cursor position (JSON)
@@ -50,6 +54,7 @@
 #define TB_PKT_FRAME            0x21
 #define TB_PKT_RAW_FRAME        0x22  /* uncompressed NV12 planes (raw passthrough) */
 #define TB_PKT_AUDIO_FRAME      0x23
+#define TB_PKT_RAW_DPCM         0x25  /* whole-frame lossless 4:4:4 TBD2 blob */
 #define TB_PKT_HEARTBEAT        0x30
 #define TB_PKT_TEARDOWN         0x31
 #define TB_PKT_CURSOR           0x32

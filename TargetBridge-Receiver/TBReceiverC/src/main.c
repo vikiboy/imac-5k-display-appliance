@@ -22,6 +22,9 @@
 #include "tb_gesture_bridge.h"
 #include "tb_display_tweaks.h"
 #include "tb_i18n.h"
+#if defined(__APPLE__)
+#include "tb_dpcm.h"
+#endif
 
 #include <SDL.h>
 #include <ApplicationServices/ApplicationServices.h>
@@ -143,6 +146,12 @@ static void tb_receiver_input_log(const char *fmt, ...) {
 
     fprintf(stderr, "%s\n", message);
 
+    /* Disk logging is opt-in. Input events can arrive at display cadence, so
+     * appending them forever would create an unbounded storage leak in an
+     * always-on receiver. launchd/system logging remains available by default. */
+    const char *file_log = getenv("TB_INPUT_DEBUG_FILE");
+    if (!file_log || strcmp(file_log, "1") != 0) return;
+
     const char *home = getenv("HOME");
     if (!home || !*home) return;
 
@@ -152,6 +161,17 @@ static void tb_receiver_input_log(const char *fmt, ...) {
 
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/input-debug.log", dir);
+
+    /* Even explicit debug logging is bounded: keep the current file plus one
+     * 1 MiB rotated copy. */
+    struct stat log_stat;
+    if (stat(path, &log_stat) == 0 && log_stat.st_size >= 1024 * 1024) {
+        char rotated[PATH_MAX];
+        snprintf(rotated, sizeof(rotated), "%s/input-debug.log.1", dir);
+        unlink(rotated);
+        rename(path, rotated);
+    }
+
     FILE *f = fopen(path, "a");
     if (!f) return;
 
@@ -618,6 +638,8 @@ static void bonjour_update(struct app *a, uint16_t port) {
     TXTRecordSetValue(&txt, "version", (uint8_t)strlen(TB_RECEIVER_VERSION), TB_RECEIVER_VERSION);
     TXTRecordSetValue(&txt, "supportsHEVCDecode", 1, tb_dec_supports_hevc_hwdecode() ? "1" : "0");
     TXTRecordSetValue(&txt, "supportsRawNV12", 1, "1");
+    TXTRecordSetValue(&txt, "supportsDPCM", 1,
+                      tb_disp_supports_dpcm(a->disp) ? "1" : "0");
 
     struct tb_display_info info;
     if (tb_disp_get_info(a->disp, &info) == 0) {
@@ -945,6 +967,41 @@ static void handle_raw_frame(struct app *a, const uint8_t *p, size_t len) {
     }
 }
 
+/* Whole-frame lossless 4:4:4 TBD2. The C parser is the trust boundary before
+ * the validated blob reaches the bounds-check-free Metal decode kernel. */
+static void handle_dpcm_frame(struct app *a, const uint8_t *p, size_t len) {
+#if defined(__APPLE__)
+    struct tb_dpcm_info frame;
+    if (!tb_disp_supports_dpcm(a->disp) ||
+        tb_dpcm_parse(p, len, &frame) != 0 ||
+        frame.width > 8192 || frame.height > 8192 ||
+        frame.ten_bit || !frame.alpha_omitted) {
+        fprintf(stderr, "[main] rejected malformed or unsupported DPCM frame (%zu bytes)\n", len);
+        /* DPCM was negotiated for this connection. A malformed frame is a
+         * protocol failure, not a skippable video drop: close so a stale
+         * fullscreen frame cannot remain indefinitely and renegotiation can
+         * start from a clean parser state. */
+        a->close_requested = 1;
+        return;
+    }
+
+    const int displayed = tb_disp_render_dpcm(
+        a->disp, p, len, (int)frame.width, (int)frame.height);
+    if (displayed > 0) {
+        on_frame_received(a, (int)frame.width, (int)frame.height);
+    } else if (displayed < 0) {
+        /* The current connection already negotiated DPCM and has no lossless
+         * software fallback. Reconnect so the next profile advertises the
+         * now-disabled capability instead of leaving a stale fullscreen frame. */
+        a->close_requested = 1;
+    }
+#else
+    (void)a;
+    (void)p;
+    (void)len;
+#endif
+}
+
 static void ring_read(struct app *a, Uint8 *dst, int len) {
     int first = AUDIO_BUF_CAP - a->audio_buf_tail;
     if (first >= len) {
@@ -1091,6 +1148,10 @@ static void on_packet(uint8_t type, const uint8_t *payload, size_t len, void *ud
     case TB_PKT_RAW_FRAME:
         a->session_active = 1;
         handle_raw_frame(a, payload, len);
+        break;
+    case TB_PKT_RAW_DPCM:
+        a->session_active = 1;
+        handle_dpcm_frame(a, payload, len);
         break;
     case TB_PKT_CURSOR:
         {
@@ -1752,7 +1813,7 @@ static void send_receiver_info(struct app *a) {
         "{\"receiverName\":\"%s\",\"panelWidth\":%u,\"panelHeight\":%u,"
         "\"modeWidth\":%u,\"modeHeight\":%u,\"refreshRate\":60,"
         "\"hiDPI\":%s,\"captureWidth\":%u,\"captureHeight\":%u,"
-        "\"supportsHEVCDecode\":%s,\"supportsRawNV12\":true,\"inputMonitoringTrusted\":%s,\"accessibilityTrusted\":%s,"
+        "\"supportsHEVCDecode\":%s,\"supportsRawNV12\":true,\"supportsDPCM\":%s,\"inputMonitoringTrusted\":%s,\"accessibilityTrusted\":%s,"
         "\"supportsNightShift\":%s,\"supportsTrueTone\":%s}",
         escaped_name,
         profile.panel_w,
@@ -1763,6 +1824,7 @@ static void send_receiver_info(struct app *a) {
         profile.capture_w,
         profile.capture_h,
         tb_dec_supports_hevc_hwdecode() ? "true" : "false",
+        tb_disp_supports_dpcm(a->disp) ? "true" : "false",
         tb_receiver_input_monitoring_trusted() ? "true" : "false",
         tb_receiver_accessibility_trusted() ? "true" : "false",
         tb_night_shift_supported() ? "true" : "false",

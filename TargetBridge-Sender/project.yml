@@ -37,19 +37,6 @@ targets:
         # Base plist merged with the auto-generated keys; declares the targetbridge:// URL scheme.
         INFOPLIST_FILE: TargetBridgeSupport/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-    preBuildScripts:
-      - name: Stamp Sender Build Info
-        script: |
-          set -euo pipefail
-          STAMP="$(date +%Y%m%d%H%M%S)"
-          cat > "${SRCROOT}/TBDisplaySender/TBDisplaySenderBuildInfo.swift" <<EOI
-          enum TBDisplaySenderBuildInfo {
-              static let marketingVersion = "3.5.1"
-              static let buildNumber = "${STAMP}"
-              static let versionDisplay = "\\(marketingVersion) + build \\(buildNumber)"
-          }
-          EOI
-
   TBDisplaySenderTests:
     type: bundle.unit-test
     platform: macOS

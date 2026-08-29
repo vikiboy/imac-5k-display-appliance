@@ -17,7 +17,26 @@ xcuserdata/
 *.o
 tbreceiver
 
-# C test outputs
-test_net_parser
-test_input_queue
+# Receiver test executables (sources live under TBReceiverC/tests/)
+/TargetBridge-Receiver/TBReceiverC/test_net_parser
+/TargetBridge-Receiver/TBReceiverC/test_dpcm
+/TargetBridge-Receiver/TBReceiverC/test_dpcm_gpu_lifecycle
+/TargetBridge-Receiver/TBReceiverC/test_input_queue
+/TargetBridge-Receiver/TBReceiverC/test_receiver_profile
+/TargetBridge-Receiver/TBReceiverC/test_renderer_policy
+/TargetBridge-Receiver/TBReceiverC/test_raw_nv12
+/TargetBridge-Receiver/TBReceiverC/test_raw_nv12_sanitized
+/TargetBridge-Receiver/TBReceiverC/test_native_metal_renderer
+/TargetBridge-Receiver/TBReceiverC/test_pre_session
+/TargetBridge-Receiver/TBReceiverC/test_shutdown_gate
+
+# Receiver diagnostic executables (keep matching .c/.m sources visible)
+/TargetBridge-Receiver/TBReceiverC/benchmark_native_metal_renderer
+/TargetBridge-Receiver/TBReceiverC/benchmark_native_metal_renderer_universal
+/TargetBridge-Receiver/TBReceiverC/benchmark_network_metal_receiver_universal
+/TargetBridge-Receiver/TBReceiverC/benchmark_targetbridge_raw_receiver_universal
+/TargetBridge-Receiver/TBReceiverC/benchmark_tb_link_universal
+/TargetBridge-Receiver/TBReceiverC/benchmark_window_inventory_universal
+/TargetBridge-Receiver/TBReceiverC/benchmark_sdl_opengl_renderer
+
 *.dSYM/

@@ -8,6 +8,15 @@ TargetBridge brings it back via software, streaming your screen at up to 5K over
 
 It's free and open source software, no subscription and no dongle required.
 
+> **2017 iMac 5K appliance branch:** this private development branch adds a
+> dedicated lossless DPCM/Metal path and plug-in launch agents for a 2017
+> 27-inch 5K iMac. It is not the upstream prebuilt release. Start with the
+> [2017 iMac overview](docs/iMac-2017-5K.md), follow the
+> [reproduction/install guide](docs/repro/imac-2017-5K/README.md), and read the
+> [plain-language engineering account](docs/blog/imac-2017-5k-software-display.md).
+> Until the final hardware result linked there passes, treat it as an appliance
+> experiment rather than an official TargetBridge release.
+
 If it is useful to you, spread the news and give us a ⭐ on GitHub.
 
 ## Support and Thanks

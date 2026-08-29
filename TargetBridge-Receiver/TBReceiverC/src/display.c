@@ -1269,7 +1269,9 @@ static void tb_disp_log_native_stats(struct tb_display *d) {
             "drawableWaitP95=%.2fms drawableWaitP99=%.2fms "
             "drawableWaitMax=%.3fms "
             "rawCopyAvg=%.3fms rawCopyP50=%.2fms rawCopyP95=%.2fms "
-            "rawCopyP99=%.2fms rawCopyMax=%.3fms\n",
+            "rawCopyP99=%.2fms rawCopyMax=%.3fms "
+            "dpcmUploadAllocs=%llu dpcmDecodedAllocs=%llu "
+            "dpcmTextureViews=%llu dpcmUploadMiB=%.2f dpcmDecodedMiB=%.2f\n",
             (unsigned long long)submitted,
             (unsigned long long)completed,
             (unsigned long long)dropped,
@@ -1318,7 +1320,12 @@ static void tb_disp_log_native_stats(struct tb_display *d) {
             tb_disp_histogram_percentile_delta(
                 stats.raw_copy_time_histogram,
                 d->native_stats_previous.raw_copy_time_histogram, 99),
-            stats.raw_copy_time_ms_max);
+            stats.raw_copy_time_ms_max,
+            (unsigned long long)stats.dpcm_upload_buffer_allocations,
+            (unsigned long long)stats.dpcm_decoded_buffer_allocations,
+            (unsigned long long)stats.dpcm_texture_view_creations,
+            (double)stats.dpcm_upload_capacity_bytes / (1024.0 * 1024.0),
+            (double)stats.dpcm_decoded_capacity_bytes / (1024.0 * 1024.0));
     d->native_stats_previous = stats;
     d->native_stats_tick = now;
 }
@@ -1454,6 +1461,66 @@ int tb_disp_render_raw_nv12(struct tb_display *d,
 #endif
     tb_disp_render_nv12(d, y, y_stride, uv, uv_stride, w, h);
     return 1;
+}
+
+int tb_disp_supports_dpcm(struct tb_display *d) {
+#if defined(__APPLE__)
+    return d && d->metal_native_enabled && d->native_metal_renderer &&
+        tb_native_metal_supports_dpcm(d->native_metal_renderer);
+#else
+    (void)d;
+    return 0;
+#endif
+}
+
+int tb_disp_render_dpcm(struct tb_display *d,
+                        const uint8_t *blob, size_t length,
+                        int w, int h) {
+#if defined(__APPLE__)
+    if (!tb_disp_supports_dpcm(d) || !blob || length == 0) return -1;
+
+    tb_disp_set_connection_state(d, 1);
+    const int result = tb_native_metal_render_dpcm(
+        d->native_metal_renderer,
+        blob, length,
+        d->cursor_x, d->cursor_y,
+        d->cursor_source_w, d->cursor_source_h,
+        d->cursor_visible, d->cursor_type, d->cursor_large);
+    if (result > 0) {
+        d->last_video_frame_time = SDL_GetTicks();
+        tb_disp_log_native_stats(d);
+        (void)w;
+        (void)h;
+        return 1;
+    }
+    if (result == 0) {
+        tb_disp_log_native_stats(d);
+        return 0;
+    }
+    if (result == TB_NATIVE_METAL_RENDER_TRANSIENT_RETRY) {
+        /* Display wake/reconfiguration can briefly invalidate drawable
+         * geometry. Drop only this frame and retain the native capability;
+         * the next frame rechecks the physical-panel gate. */
+        tb_disp_log_native_stats(d);
+        return 0;
+    }
+
+    d->metal_native_enabled = 0;
+    tb_native_metal_set_visible(d->native_metal_renderer, 0);
+    if (!d->metal_native_failed_logged) {
+        d->metal_native_failed_logged = 1;
+        fprintf(stderr,
+                "[disp] native Metal DPCM path failed; disabling DPCM capability\n");
+    }
+    return -1;
+#else
+    (void)d;
+    (void)blob;
+    (void)length;
+    (void)w;
+    (void)h;
+    return -1;
+#endif
 }
 
 void tb_disp_set_cursor(struct tb_display *d,

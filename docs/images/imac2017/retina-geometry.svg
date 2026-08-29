@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="430" viewBox="0 0 1000 430" role="img" aria-labelledby="title desc">
+  <title id="title">Retina logical points and backing pixels</title>
+  <desc id="desc">Each logical point uses a two by two group of backing pixels. A 2560 by 1440 point desktop therefore needs a 5120 by 2880 pixel backing store.</desc>
+  <style>.headline{font:700 28px -apple-system,BlinkMacSystemFont,sans-serif;fill:#14212b}.label{font:600 20px -apple-system,BlinkMacSystemFont,sans-serif;fill:#263746}.note{font:16px -apple-system,BlinkMacSystemFont,sans-serif;fill:#425466}.panel{fill:#f7f8fa;stroke:#263746;stroke-width:3;rx:18}.point{fill:#dceaf4;stroke:#49647a;stroke-width:2}.pixel{fill:#d9f3eb;stroke:#0e756b;stroke-width:2}</style>
+  <text x="500" y="45" text-anchor="middle" class="headline">A native Retina mode is two facts, not one resolution label</text>
+  <rect x="65" y="90" width="350" height="245" class="panel"/><text x="240" y="130" text-anchor="middle" class="label">Logical desktop</text><rect x="140" y="165" width="200" height="112" class="point"/><text x="240" y="218" text-anchor="middle" class="label">2560 × 1440</text><text x="240" y="246" text-anchor="middle" class="note">points used by applications</text>
+  <text x="500" y="215" text-anchor="middle" class="headline">× 2</text>
+  <rect x="585" y="90" width="350" height="245" class="panel"/><text x="760" y="130" text-anchor="middle" class="label">Backing framebuffer</text>
+  <g transform="translate(660 164)"><rect x="0" y="0" width="92" height="52" class="pixel"/><rect x="96" y="0" width="92" height="52" class="pixel"/><rect x="0" y="56" width="92" height="52" class="pixel"/><rect x="96" y="56" width="92" height="52" class="pixel"/></g>
+  <text x="760" y="296" text-anchor="middle" class="label">5120 × 2880 pixels</text>
+  <text x="500" y="382" text-anchor="middle" class="note">A 5120×2880 packet is not proof by itself: WindowServer must first activate this exact 2× mode.</text>
+</svg>

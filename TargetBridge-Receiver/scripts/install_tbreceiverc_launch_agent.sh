@@ -7,9 +7,6 @@ REPO_ROOT="$(cd "$ROOT/.." && pwd)"
 APP_PATH="${1:-${REPO_ROOT}/build/TargetBridge Receiver.app}"
 PLIST_DIR="${HOME}/Library/LaunchAgents"
 PLIST_PATH="${PLIST_DIR}/com.targetbridge.receiver.plist"
-LOG_DIR="${HOME}/Library/Logs"
-STDOUT_LOG="${LOG_DIR}/TargetBridgeReceiver.launchd.out.log"
-STDERR_LOG="${LOG_DIR}/TargetBridgeReceiver.launchd.err.log"
 
 if [[ ! -d "${APP_PATH}" ]]; then
   echo "Receiver app not found: ${APP_PATH}" >&2
@@ -17,7 +14,7 @@ if [[ ! -d "${APP_PATH}" ]]; then
   exit 1
 fi
 
-mkdir -p "${PLIST_DIR}" "${LOG_DIR}"
+mkdir -p "${PLIST_DIR}"
 
 cat > "${PLIST_PATH}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -40,10 +37,6 @@ cat > "${PLIST_PATH}" <<EOF
     <array>
         <string>Aqua</string>
     </array>
-    <key>StandardOutPath</key>
-    <string>${STDOUT_LOG}</string>
-    <key>StandardErrorPath</key>
-    <string>${STDERR_LOG}</string>
 </dict>
 </plist>
 EOF

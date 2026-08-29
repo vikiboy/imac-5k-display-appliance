@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="title desc">
+  <title id="title">Experimental TargetBridge lossless 5K display pipeline</title>
+  <desc id="desc">The experimental pipeline has a MacBook create a Retina virtual display, capture Display P3 pixels, encode them with TBD2, send them across Thunderbolt Bridge, and have the iMac decode and present them with Metal.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#49647a"/></marker>
+    <style>
+      .box{fill:#f7f8fa;stroke:#263746;stroke-width:2;rx:16}.stage{font:600 18px -apple-system,BlinkMacSystemFont,sans-serif;fill:#14212b}.note{font:14px -apple-system,BlinkMacSystemFont,sans-serif;fill:#425466}.arrow{stroke:#49647a;stroke-width:3;marker-end:url(#arrow)}.machine{font:700 23px -apple-system,BlinkMacSystemFont,sans-serif;fill:#0e5d65}.gate{fill:#e9f7f3;stroke:#0e756b;stroke-width:2;rx:12}
+    </style>
+  </defs>
+  <text x="60" y="45" class="machine">MacBook Pro — Sender</text>
+  <text x="835" y="45" class="machine">2017 5K iMac — Receiver</text>
+  <rect x="35" y="78" width="190" height="112" class="box"/><text x="130" y="117" text-anchor="middle" class="stage">Virtual display</text><text x="130" y="146" text-anchor="middle" class="note">2560×1440 points</text><text x="130" y="169" text-anchor="middle" class="note">5120×2880 pixels</text>
+  <line x1="225" y1="134" x2="275" y2="134" class="arrow"/>
+  <rect x="285" y="78" width="190" height="112" class="box"/><text x="380" y="117" text-anchor="middle" class="stage">Capture</text><text x="380" y="146" text-anchor="middle" class="note">BGRA8 · SDR</text><text x="380" y="169" text-anchor="middle" class="note">Display P3 · 4:4:4</text>
+  <line x1="475" y1="134" x2="525" y2="134" class="arrow"/>
+  <rect x="535" y="78" width="190" height="112" class="box"/><text x="630" y="117" text-anchor="middle" class="stage">Metal TBD2</text><text x="630" y="146" text-anchor="middle" class="note">Lossless tile-DPCM</text><text x="630" y="169" text-anchor="middle" class="note">3 bounded jobs</text>
+  <line x1="725" y1="134" x2="775" y2="134" class="arrow"/>
+  <rect x="785" y="78" width="190" height="112" class="box"/><text x="880" y="117" text-anchor="middle" class="stage">Thunderbolt</text><text x="880" y="146" text-anchor="middle" class="note">TCP over Bridge</text><text x="880" y="169" text-anchor="middle" class="note">direct trusted link</text>
+  <line x1="975" y1="134" x2="1025" y2="134" class="arrow"/>
+  <rect x="1035" y="78" width="130" height="112" class="box"/><text x="1100" y="117" text-anchor="middle" class="stage">Metal</text><text x="1100" y="146" text-anchor="middle" class="note">GPU decode</text><text x="1100" y="169" text-anchor="middle" class="note">P3 layer</text>
+  <line x1="1100" y1="190" x2="1100" y2="238" class="arrow"/>
+  <rect x="995" y="250" width="210" height="92" class="box"/><text x="1100" y="287" text-anchor="middle" class="stage">iMac panel</text><text x="1100" y="316" text-anchor="middle" class="note">5120×2880 drawable</text>
+  <rect x="250" y="260" width="650" height="105" class="gate"/><text x="575" y="294" text-anchor="middle" class="stage">Receiver acceptance gate</text><text x="575" y="322" text-anchor="middle" class="note">Accept TBD2 only when points ×2 = source pixels = drawable pixels</text><text x="575" y="346" text-anchor="middle" class="note">No upscaling, sharpening, inferred pixels, or unbounded queue</text>
+</svg>

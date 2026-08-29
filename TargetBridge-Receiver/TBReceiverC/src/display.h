@@ -56,6 +56,13 @@ int tb_disp_render_raw_nv12(struct tb_display *d,
                             const uint8_t *uv, int uv_stride,
                             int w, int h);
 
+/* Lossless whole-frame TBD2 path. Capability is true only when the native
+ * Metal decoder and packed Display-P3 presenter are both available. */
+int tb_disp_supports_dpcm(struct tb_display *d);
+int tb_disp_render_dpcm(struct tb_display *d,
+                        const uint8_t *blob, size_t length,
+                        int w, int h);
+
 /* Present a VideoToolbox CVPixelBuffer through the optional native Metal
  * path. Returns non-zero when the frame was handled; portable callers keep
  * using tb_disp_render_nv12. */

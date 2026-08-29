@@ -126,19 +126,25 @@ int main(int argc, const char *argv[]) {
         if (rawCopy) {
             const CVReturn lockStatus = CVPixelBufferLockBaseAddress(
                 pixelBuffer, kCVPixelBufferLock_ReadOnly);
+            if (lockStatus != kCVReturnSuccess) {
+                fprintf(stderr,
+                        "TB_METAL_BENCHMARK result=failed reason=source-lock\n");
+                CVPixelBufferRelease(pixelBuffer);
+                tb_native_metal_destroy(renderer);
+                [window close];
+                return 71;
+            }
             rawY = (const uint8_t *)
                 CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0);
             rawUV = (const uint8_t *)
                 CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
             rawYStride = (int)CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0);
             rawUVStride = (int)CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
-            if (lockStatus != kCVReturnSuccess || !rawY || !rawUV) {
+            if (!rawY || !rawUV) {
                 fprintf(stderr,
                         "TB_METAL_BENCHMARK result=failed reason=source-lock\n");
-                if (lockStatus == kCVReturnSuccess) {
-                    CVPixelBufferUnlockBaseAddress(
-                        pixelBuffer, kCVPixelBufferLock_ReadOnly);
-                }
+                CVPixelBufferUnlockBaseAddress(
+                    pixelBuffer, kCVPixelBufferLock_ReadOnly);
                 CVPixelBufferRelease(pixelBuffer);
                 tb_native_metal_destroy(renderer);
                 [window close];
@@ -205,7 +211,7 @@ int main(int argc, const char *argv[]) {
         printf(
             "TB_METAL_BENCHMARK result=%s size=%dx%d requested=%d targetFPS=%d "
             "input=%s "
-            "elapsed=%.3fs submitted=%llu completed=%llu dropped=%llu "
+            "elapsed=%.3fs submitted=%llu completed=%llu gpuErrors=%llu dropped=%llu "
             "inflight=%llu inflightMax=%llu "
             "submitAvg=%.3fms submitP50=%.2fms submitP95=%.2fms "
             "submitP99=%.2fms submitMax=%.3fms "
@@ -225,6 +231,7 @@ int main(int argc, const char *argv[]) {
             elapsed,
             (unsigned long long)stats.submitted_frames,
             (unsigned long long)stats.completed_frames,
+            (unsigned long long)stats.gpu_error_frames,
             (unsigned long long)stats.dropped_frames,
             (unsigned long long)stats.inflight_frames,
             (unsigned long long)stats.inflight_frames_max,
@@ -259,6 +266,7 @@ int main(int argc, const char *argv[]) {
         CVPixelBufferRelease(pixelBuffer);
         tb_native_metal_destroy(renderer);
         [window close];
-        return health.decision == TB_RENDERER_HEALTH_KEEP_METAL ? 0 : 2;
+        return health.decision == TB_RENDERER_HEALTH_KEEP_METAL &&
+               stats.gpu_error_frames == 0 ? 0 : 2;
     }
 }

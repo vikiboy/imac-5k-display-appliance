@@ -65,6 +65,7 @@ final class ReceiverBackedVirtualDisplaySession {
     private(set) var displayID: CGDirectDisplayID = kCGNullDirectDisplay
     private(set) var displayName: String = ""
     private(set) var identityDescription: String = ""
+    private var modeActivationTask: Task<Bool, Never>?
 
     func create(
         from profile: TBMonitorDisplayProfile,
@@ -150,14 +151,21 @@ final class ReceiverBackedVirtualDisplaySession {
             for: identity,
             receiverKey: receiverKey
         )
-        let savedChoice = modeOverride == nil
+        // A previous build could persist the 1x duplicate of a HiDPI mode. Both
+        // variants have identical point dimensions and refresh rates, but only
+        // the 2x variant asks WindowServer to render a Retina framebuffer.
+        // Never let that stale 1x choice silently defeat a HiDPI receiver.
+        let loadedChoice = modeOverride == nil
             ? TBVirtualDisplayModeMemory.shared.load(forKey: preferenceKey)
             : nil
-        activatePreferredMode(for: display.displayID,
-                              mode: resolvedMode,
-                              refreshRate: preferredRefreshRate,
-                              savedChoice: savedChoice)
-
+        let savedChoice: TBVirtualDisplayModeMemory.Choice? = loadedChoice.flatMap { choice in
+            guard !profile.hiDPI ||
+                    (choice.pixelWidth == choice.pointWidth * 2 &&
+                     choice.pixelHeight == choice.pointHeight * 2) else {
+                return nil
+            }
+            return choice
+        }
         virtualDisplay = display
         displayID = display.displayID
         displayName = profile.receiverName
@@ -166,10 +174,18 @@ final class ReceiverBackedVirtualDisplaySession {
         // Remember any manual resolution change the user makes from now on, so it
         // sticks across reconnects for this receiver.
         TBVirtualDisplayModeMemory.shared.track(displayID: display.displayID, key: preferenceKey)
+        modeActivationTask = preferredModeActivationTask(
+            for: display.displayID,
+            mode: resolvedMode,
+            refreshRate: preferredRefreshRate,
+            savedChoice: savedChoice
+        )
         return true
     }
 
     func destroy() {
+        modeActivationTask?.cancel()
+        modeActivationTask = nil
         if displayID != kCGNullDirectDisplay {
             TBVirtualDisplayModeMemory.shared.untrack(displayID: displayID)
         }
@@ -179,27 +195,64 @@ final class ReceiverBackedVirtualDisplaySession {
         identityDescription = ""
     }
 
-    @discardableResult
-    private func activatePreferredMode(for displayID: CGDirectDisplayID,
-                                       mode: TBVirtualDisplayModeSize,
-                                       refreshRate: Double,
-                                       savedChoice: TBVirtualDisplayModeMemory.Choice?) -> Bool {
-        let timeout = Date().addingTimeInterval(2.0)
-        while Date() < timeout {
-            var success = false
-            autoreleasepool {
-                let chosenMode = savedChoice.flatMap { savedMode(for: displayID, choice: $0) }
-                    ?? preferredMode(for: displayID, mode: mode, refreshRate: refreshRate)
-                if let chosenMode {
-                    success = CGDisplaySetDisplayMode(displayID, chosenMode, nil) == .success
+    /// Capture must wait for this result. A 5120x2880 stream is not genuinely
+    /// Retina if ScreenCaptureKit merely scales a lower-resolution desktop into
+    /// that frame size while WindowServer is still publishing the 2x mode.
+    func waitForPreferredModeActivation() async -> Bool {
+        guard let modeActivationTask else { return false }
+        return await modeActivationTask.value
+    }
+
+    private func preferredModeActivationTask(
+        for targetDisplayID: CGDirectDisplayID,
+        mode: TBVirtualDisplayModeSize,
+        refreshRate: Double,
+        savedChoice: TBVirtualDisplayModeMemory.Choice?
+    ) -> Task<Bool, Never> {
+        // `apply(settings)` returns before WindowServer finishes registering
+        // all generated HiDPI modes. A synchronous nested run loop here is not
+        // safe while SwiftUI is animating the sender window, so settle and retry
+        // asynchronously on the main actor instead.
+        Task { @MainActor [weak self] in
+            guard let self else { return false }
+            for attempt in 1...6 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard !Task.isCancelled else { return false }
+                guard self.displayID == targetDisplayID,
+                      self.virtualDisplay != nil else { return false }
+
+                let chosenMode = savedChoice.flatMap {
+                    self.savedMode(for: targetDisplayID, choice: $0)
+                } ?? self.preferredMode(
+                    for: targetDisplayID,
+                    mode: mode,
+                    refreshRate: refreshRate
+                )
+                guard let chosenMode else { continue }
+                guard CGDisplaySetDisplayMode(targetDisplayID, chosenMode, nil) == .success else {
+                    continue
+                }
+
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                guard let activeMode = CGDisplayCopyDisplayMode(targetDisplayID) else {
+                    continue
+                }
+                if activeMode.width == chosenMode.width &&
+                    activeMode.height == chosenMode.height &&
+                    activeMode.pixelWidth == chosenMode.pixelWidth &&
+                    activeMode.pixelHeight == chosenMode.pixelHeight {
+                    NSLog(
+                        "TargetBridge: activated Retina mode %dx%d points -> %dx%d pixels on display %u (attempt %d)",
+                        activeMode.width, activeMode.height,
+                        activeMode.pixelWidth, activeMode.pixelHeight,
+                        targetDisplayID, attempt
+                    )
+                    return true
                 }
             }
-            if success {
-                return true
-            }
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+            NSLog("TargetBridge: failed to keep preferred Retina mode active on display %u", targetDisplayID)
+            return false
         }
-        return false
     }
 
     /// Find the display mode matching a saved choice. Matches on pixel size as
@@ -224,13 +277,23 @@ final class ReceiverBackedVirtualDisplaySession {
     }
 
     private func preferredMode(for displayID: CGDirectDisplayID, mode: TBVirtualDisplayModeSize, refreshRate: Double) -> CGDisplayMode? {
-        guard let modesCF = CGDisplayCopyAllDisplayModes(displayID, nil) else {
+        // WindowServer classifies the 2x Retina entry as a duplicate of the 1x
+        // mode because both report the same logical dimensions. It is omitted
+        // from the default enumeration even though it is the mode we need.
+        let options = [kCGDisplayShowDuplicateLowResolutionModes: kCFBooleanTrue] as CFDictionary
+        guard let modesCF = CGDisplayCopyAllDisplayModes(displayID, options) else {
             return nil
         }
         let modes = modesCF as? [CGDisplayMode] ?? []
 
+        // CGVirtualDisplay publishes both a 1x and a 2x mode with the same
+        // logical size and refresh rate. Selecting by points + Hz alone is
+        // ambiguous and previously chose the 1x entry on macOS 26. Require the
+        // backing-pixel dimensions as well so Retina rendering is guaranteed.
         let matchingModes = modes.filter { candidate in
-            candidate.width == mode.width && candidate.height == mode.height
+            candidate.width == mode.width && candidate.height == mode.height &&
+            candidate.pixelWidth == mode.backingWidth &&
+            candidate.pixelHeight == mode.backingHeight
         }.sorted { $0.refreshRate > $1.refreshRate }
 
         if let exactMatch = matchingModes.first(where: { abs($0.refreshRate - refreshRate) < 0.5 }) {

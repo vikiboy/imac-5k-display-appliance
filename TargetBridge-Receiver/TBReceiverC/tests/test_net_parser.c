@@ -101,6 +101,27 @@ static void test_single_packet_whole_feed(void) {
     tb_parser_free(&p);
 }
 
+static void test_whole_frame_dpcm_type_is_preserved(void) {
+    struct tb_parser p;
+    tb_parser_init(&p, capture_cb, NULL);
+    reset_capture();
+
+    static const uint8_t tbd2_magic[] = {'T', 'B', 'D', '2'};
+    uint8_t pkt[16];
+    size_t n = build_packet(pkt, TB_PKT_RAW_DPCM,
+                            tbd2_magic, sizeof(tbd2_magic));
+
+    CHECK(TB_PKT_RAW_DPCM == 0x25, "whole-frame DPCM packet ID");
+    CHECK(tb_parser_feed(&p, pkt, n) == 0, "DPCM packet feed succeeds");
+    CHECK(g_captured_count == 1, "DPCM packet fires once");
+    CHECK(g_captured[0].type == TB_PKT_RAW_DPCM, "DPCM type preserved");
+    CHECK(g_captured[0].len == sizeof(tbd2_magic), "DPCM payload length preserved");
+    CHECK(memcmp(g_captured[0].payload, tbd2_magic,
+                 sizeof(tbd2_magic)) == 0, "DPCM payload preserved");
+
+    tb_parser_free(&p);
+}
+
 static void test_byte_by_byte_feed(void) {
     struct tb_parser p;
     tb_parser_init(&p, capture_cb, NULL);
@@ -225,6 +246,7 @@ static void test_large_payload_roundtrip(void) {
 int main(void) {
     test_link_local_ipv4_classifier();
     test_single_packet_whole_feed();
+    test_whole_frame_dpcm_type_is_preserved();
     test_byte_by_byte_feed();
     test_two_contiguous_packets();
     test_split_across_feeds_with_remainder();

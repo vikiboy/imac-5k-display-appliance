@@ -3,6 +3,7 @@ import Foundation
 @MainActor
 enum TBInputDebugLog {
     private static let fileManager = FileManager.default
+    private static let maximumLogBytes: UInt64 = 1_048_576
 
     private static var logURL: URL {
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -21,6 +22,13 @@ enum TBInputDebugLog {
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
 
         if let data = line.data(using: .utf8) {
+            if let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+               let size = attributes[.size] as? NSNumber,
+               size.uint64Value + UInt64(data.count) > maximumLogBytes {
+                let rotated = url.appendingPathExtension("1")
+                try? fileManager.removeItem(at: rotated)
+                try? fileManager.moveItem(at: url, to: rotated)
+            }
             if fileManager.fileExists(atPath: url.path) {
                 if let handle = try? FileHandle(forWritingTo: url) {
                     try? handle.seekToEnd()

@@ -67,9 +67,29 @@ struct TBConnectionCandidate: Hashable {
     let localInterfaceName: String
     let localIP: String
     let receiverIP: String
+    /// The receiver TXT-record field that supplied `receiverIP`. A `nil`
+    /// value means the address came from a generic Bonjour resolution rather
+    /// than a transport-specific advertisement.
+    let advertisedReceiverPath: TBConnectionPathKind?
+
+    init(
+        kind: TBConnectionPathKind,
+        localInterfaceName: String,
+        localIP: String,
+        receiverIP: String,
+        advertisedReceiverPath: TBConnectionPathKind? = nil
+    ) {
+        self.kind = kind
+        self.localInterfaceName = localInterfaceName
+        self.localIP = localIP
+        self.receiverIP = receiverIP
+        self.advertisedReceiverPath = advertisedReceiverPath
+    }
 
     var transportKind: TBTransportKind { kind.transportKind }
-    var id: String { "\(kind.rawValue)|\(localInterfaceName)|\(localIP)|\(receiverIP)" }
+    var id: String {
+        "\(kind.rawValue)|\(localInterfaceName)|\(localIP)|\(receiverIP)|\(advertisedReceiverPath?.rawValue ?? "resolved")"
+    }
 }
 
 struct TBConnectionMeasurement: Equatable {
@@ -105,6 +125,11 @@ enum TBLog {
 /// actionable connection-failure details. Kept free of session state so the
 /// unit-test bundle can exercise them without hardware.
 enum TBConnectionDiagnostics {
+
+    private struct ReceiverEndpoint {
+        let ip: String
+        let advertisedPath: TBConnectionPathKind?
+    }
 
     /// A local IPv4 interface as (name, ip) — the test-injectable slice of
     /// what `getifaddrs` reports.
@@ -212,46 +237,49 @@ enum TBConnectionDiagnostics {
         interfaces: [LocalInterface],
         hardwareKinds: [String: TBConnectionPathKind]
     ) -> [TBConnectionCandidate] {
-        let allReceiverIPs = uniqueIPv4Addresses([
-            receiver.thunderboltIP,
-            receiver.usbIP,
-            receiver.ethernetIP,
-            receiver.wifiIP,
-            receiver.networkIP,
-            receiver.preferredIP,
-        ] + receiver.resolvedIPv4Addresses)
+        // Preserve the receiver's transport-specific TXT metadata instead of
+        // flattening every address into one pool. In particular, both
+        // Thunderbolt Bridge and USB-NCM commonly use 169.254/16, so address
+        // shape alone cannot distinguish them.
+        let receiverEndpoints = uniqueReceiverEndpoints([
+            ReceiverEndpoint(ip: receiver.thunderboltIP, advertisedPath: .thunderbolt),
+            ReceiverEndpoint(ip: receiver.usbIP, advertisedPath: .usb),
+            ReceiverEndpoint(ip: receiver.ethernetIP, advertisedPath: .ethernet),
+            ReceiverEndpoint(ip: receiver.wifiIP, advertisedPath: .wifi),
+            ReceiverEndpoint(ip: receiver.networkIP, advertisedPath: nil),
+            ReceiverEndpoint(ip: receiver.preferredIP, advertisedPath: nil),
+        ] + receiver.resolvedIPv4Addresses.map {
+            ReceiverEndpoint(ip: $0, advertisedPath: nil)
+        })
 
         var candidates: [TBConnectionCandidate] = []
         var seen = Set<String>()
         for interface in interfaces {
             guard let kind = pathKind(for: interface, hardwareKinds: hardwareKinds) else { continue }
-            let explicitIP: String
-            switch kind {
-            case .thunderbolt: explicitIP = receiver.thunderboltIP
-            case .usb: explicitIP = receiver.usbIP
-            case .ethernet: explicitIP = receiver.ethernetIP
-            case .wifi: explicitIP = receiver.wifiIP
-            }
+            let explicitEndpoints = receiverEndpoints.filter { $0.advertisedPath == kind }
+            let genericEndpoints = receiverEndpoints.filter { $0.advertisedPath == nil }
 
-            let addressPool: [String]
+            let addressPool: [ReceiverEndpoint]
             if kind == .thunderbolt || kind == .usb {
-                addressPool = uniqueIPv4Addresses([explicitIP] + allReceiverIPs.filter(isIPv4LinkLocal))
+                // Do not cross-pollinate the other direct transport's
+                // advertised link-local endpoint. Generic resolved addresses
+                // remain useful to automatic probing for older receivers.
+                addressPool = explicitEndpoints + genericEndpoints.filter { isIPv4LinkLocal($0.ip) }
             } else {
-                let privateAddresses = allReceiverIPs.filter(isPrivateIPv4)
-                let sameSubnet = privateAddresses.filter { likelySameIPv4Subnet(interface.ip, $0) }
+                let privateEndpoints = genericEndpoints.filter { isPrivateIPv4($0.ip) }
+                let sameSubnet = privateEndpoints.filter { likelySameIPv4Subnet(interface.ip, $0.ip) }
                 // Prefer a same-/24 endpoint. If Bonjour only exposes a different
                 // subnet, retain it as a probe candidate so routed LANs still work.
-                addressPool = uniqueIPv4Addresses(
-                    [explicitIP] + (sameSubnet.isEmpty ? privateAddresses : sameSubnet)
-                )
+                addressPool = explicitEndpoints + (sameSubnet.isEmpty ? privateEndpoints : sameSubnet)
             }
 
-            for receiverIP in addressPool where receiverIP != interface.ip {
+            for endpoint in addressPool where endpoint.ip != interface.ip {
                 let candidate = TBConnectionCandidate(
                     kind: kind,
                     localInterfaceName: interface.name,
                     localIP: interface.ip,
-                    receiverIP: receiverIP
+                    receiverIP: endpoint.ip,
+                    advertisedReceiverPath: endpoint.advertisedPath
                 )
                 if seen.insert(candidate.id).inserted {
                     candidates.append(candidate)
@@ -259,15 +287,29 @@ enum TBConnectionDiagnostics {
             }
         }
 
-        return candidates.sorted {
-            if $0.kind.tieBreakPriority != $1.kind.tieBreakPriority {
-                return $0.kind.tieBreakPriority > $1.kind.tieBreakPriority
+        return candidates.sorted(by: candidateComesBefore)
+    }
+
+    /// Selects a fixed user-requested route without inferring a Thunderbolt
+    /// endpoint from a generic link-local address. A pinned Thunderbolt route
+    /// is valid only when the local interface is bridge0 and the remote address
+    /// came from the receiver's `tbIP` advertisement. If either fact is absent,
+    /// selection fails closed and the automation retry waits for fresh metadata.
+    static func selectPinnedCandidate(
+        _ candidates: [TBConnectionCandidate],
+        preference: TBConnectionPathPreference
+    ) -> TBConnectionCandidate? {
+        guard preference != .automatic, preference != .wired else { return nil }
+
+        var eligible = candidates.filter { preference.allows($0.kind) }
+        if preference == .thunderbolt {
+            eligible = eligible.filter {
+                $0.kind == .thunderbolt
+                    && $0.localInterfaceName == "bridge0"
+                    && $0.advertisedReceiverPath == .thunderbolt
             }
-            if $0.localInterfaceName != $1.localInterfaceName {
-                return $0.localInterfaceName < $1.localInterfaceName
-            }
-            return $0.receiverIP < $1.receiverIP
         }
+        return eligible.sorted(by: candidateComesBefore).first
     }
 
     static func selectBestMeasurement(
@@ -380,13 +422,38 @@ enum TBConnectionDiagnostics {
         )
     }
 
-    private static func uniqueIPv4Addresses(_ values: [String]) -> [String] {
-        var result: [String] = []
+    private static func uniqueReceiverEndpoints(_ values: [ReceiverEndpoint]) -> [ReceiverEndpoint] {
+        var result: [ReceiverEndpoint] = []
         var seen = Set<String>()
-        for value in values where ipv4Octets(value) != nil && seen.insert(value).inserted {
+        for value in values where ipv4Octets(value.ip) != nil && seen.insert(value.ip).inserted {
             result.append(value)
         }
         return result
+    }
+
+    private static func candidateComesBefore(
+        _ lhs: TBConnectionCandidate,
+        _ rhs: TBConnectionCandidate
+    ) -> Bool {
+        if lhs.kind.tieBreakPriority != rhs.kind.tieBreakPriority {
+            return lhs.kind.tieBreakPriority > rhs.kind.tieBreakPriority
+        }
+        let lhsIsExplicitMatch = lhs.advertisedReceiverPath == lhs.kind
+        let rhsIsExplicitMatch = rhs.advertisedReceiverPath == rhs.kind
+        if lhsIsExplicitMatch != rhsIsExplicitMatch {
+            return lhsIsExplicitMatch
+        }
+        if lhs.localInterfaceName != rhs.localInterfaceName {
+            return lhs.localInterfaceName < rhs.localInterfaceName
+        }
+        if lhs.localIP != rhs.localIP {
+            return lhs.localIP < rhs.localIP
+        }
+        if lhs.receiverIP != rhs.receiverIP {
+            return lhs.receiverIP < rhs.receiverIP
+        }
+        return (lhs.advertisedReceiverPath?.rawValue ?? "")
+            < (rhs.advertisedReceiverPath?.rawValue ?? "")
     }
 
     private static func likelySameIPv4Subnet(_ lhs: String, _ rhs: String) -> Bool {

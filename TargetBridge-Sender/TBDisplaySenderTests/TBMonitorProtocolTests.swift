@@ -5,6 +5,42 @@ import XCTest
 /// and no receiver — they pin down the framing invariants both apps rely on:
 /// `[4B BE length][1B type][payload]` where length counts type + payload.
 final class TBMonitorProtocolTests: XCTestCase {
+    func testMonitorCodecLabelPrefersNegotiatedLosslessTransport() {
+        XCTAssertEqual(
+            TBMonitorCodecLabel.resolve(
+                usesDPCM: true,
+                usesRawNV12: false,
+                encodedCodecName: "HEVC"
+            ),
+            "DPCM 8-bit"
+        )
+        XCTAssertEqual(
+            TBMonitorCodecLabel.resolve(
+                usesDPCM: false,
+                usesRawNV12: true,
+                encodedCodecName: "HEVC"
+            ),
+            "NV12 RAW"
+        )
+        XCTAssertEqual(
+            TBMonitorCodecLabel.resolve(
+                usesDPCM: false,
+                usesRawNV12: false,
+                encodedCodecName: "HEVC"
+            ),
+            "HEVC"
+        )
+        XCTAssertEqual(
+            TBMonitorCodecLabel.resolve(
+                usesDPCM: true,
+                usesRawNV12: true,
+                encodedCodecName: "H.264"
+            ),
+            "DPCM 8-bit",
+            "DPCM is the fail-closed fidelity transport when both flags are present"
+        )
+    }
+
 
     // MARK: - BE32 primitives
 
@@ -39,8 +75,9 @@ final class TBMonitorProtocolTests: XCTestCase {
         XCTAssertEqual([UInt8](packet), [0x00, 0x00, 0x00, 0x04, 0x30, 0xAA, 0xBB, 0xCC])
     }
 
-    func testRawNV12PacketTypeAndOlderDisplayProfilesRemainCompatible() throws {
+    func testRawPacketTypesAndOlderDisplayProfilesRemainCompatible() throws {
         XCTAssertEqual(TBMonitorPacketType.rawFrame.rawValue, 0x22)
+        XCTAssertEqual(TBMonitorPacketType.rawDPCM.rawValue, 0x25)
 
         let olderProfile = Data("""
         {
@@ -57,6 +94,82 @@ final class TBMonitorProtocolTests: XCTestCase {
         """.utf8)
         let profile = try JSONDecoder().decode(TBMonitorDisplayProfile.self, from: olderProfile)
         XCTAssertNil(profile.supportsRawNV12)
+        XCTAssertNil(profile.supportsDPCM)
+    }
+
+    func testDisplayProfileDecodesDPCMCapability() throws {
+        let payload = Data("""
+        {
+          "receiverName": "DPCM Receiver",
+          "panelWidth": 5120,
+          "panelHeight": 2880,
+          "modeWidth": 2560,
+          "modeHeight": 1440,
+          "refreshRate": 60,
+          "hiDPI": true,
+          "captureWidth": 5120,
+          "captureHeight": 2880,
+          "supportsDPCM": true
+        }
+        """.utf8)
+        let profile = try JSONDecoder().decode(TBMonitorDisplayProfile.self, from: payload)
+        XCTAssertEqual(profile.supportsDPCM, true)
+    }
+
+    func testFramedPacketWritesHeaderInReservedPrefix() throws {
+        var storage: [UInt8] = [0, 0, 0, 0, 0, 0x54, 0x42, 0x44, 0x32]
+        let packet = storage.withUnsafeMutableBufferPointer { buffer in
+            TBMonitorProtocol.framedPacket(
+                type: .rawDPCM,
+                base: UnsafePointer(buffer.baseAddress!),
+                totalCount: buffer.count
+            )
+        }
+
+        XCTAssertEqual(packet, Data([0, 0, 0, 5, 0x25, 0x54, 0x42, 0x44, 0x32]))
+        XCTAssertEqual(storage, [0, 0, 0, 5, 0x25, 0x54, 0x42, 0x44, 0x32])
+
+        var buffer = try XCTUnwrap(packet)
+        let drained = try XCTUnwrap(TBMonitorProtocol.drainPacket(from: &buffer))
+        XCTAssertEqual(drained.0, .rawDPCM)
+        XCTAssertEqual(drained.1, Data([0x54, 0x42, 0x44, 0x32]))
+        XCTAssertTrue(buffer.isEmpty)
+    }
+
+    func testFramedPacketRejectsShortReservedPrefixWithoutMutation() {
+        var storage: [UInt8] = [1, 2, 3, 4]
+        let packet = storage.withUnsafeMutableBufferPointer { buffer in
+            TBMonitorProtocol.framedPacket(
+                type: .rawDPCM,
+                base: UnsafePointer(buffer.baseAddress!),
+                totalCount: buffer.count
+            )
+        }
+        XCTAssertNil(packet)
+        XCTAssertEqual(storage, [1, 2, 3, 4])
+    }
+
+    func testFramedPacketRejectsProtocolAndUInt32OverflowBeforeReadingBase() {
+        var sentinel: UInt8 = 0xA5
+        let packetBeyondProtocolCap = withUnsafePointer(to: &sentinel) { pointer in
+            TBMonitorProtocol.framedPacket(
+                type: .rawDPCM,
+                base: pointer,
+                totalCount: TBMonitorProtocol.headerSize + Int(TBMonitorProtocol.maxPacketLength)
+            )
+        }
+        XCTAssertNil(packetBeyondProtocolCap)
+        XCTAssertEqual(sentinel, 0xA5)
+
+        let packetBeyondUInt32 = withUnsafePointer(to: &sentinel) { pointer in
+            TBMonitorProtocol.framedPacket(
+                type: .rawDPCM,
+                base: pointer,
+                totalCount: Int(UInt32.max) + TBMonitorProtocol.headerSize
+            )
+        }
+        XCTAssertNil(packetBeyondUInt32)
+        XCTAssertEqual(sentinel, 0xA5)
     }
 
     func testDrainPacketRoundTrip() throws {

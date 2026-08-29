@@ -9,6 +9,8 @@ enum TBMonitorPacketType: UInt8 {
     case frame = 0x21
     case rawFrame = 0x22   // Uncompressed NV12 planes (raw passthrough mode)
     case audioFrame = 0x23
+    /// Whole-frame, lossless 4:4:4 tile-DPCM (opaque TBD2 blob).
+    case rawDPCM = 0x25
     case heartbeat = 0x30
     case teardown = 0x31
     case cursor = 0x32
@@ -44,6 +46,9 @@ struct TBMonitorDisplayProfile: Codable {
     var captureHeight: Int
     var supportsHEVCDecode: Bool?
     var supportsRawNV12: Bool?
+    /// Whether the receiver built a GPU decoder for whole-frame TBD2 blobs.
+    /// Absent means unsupported, preserving compatibility with older receivers.
+    var supportsDPCM: Bool?
     var inputMonitoringTrusted: Bool?
     var accessibilityTrusted: Bool?
     /// Optional so older receivers still decode; absent means "cannot".
@@ -136,6 +141,34 @@ enum TBMonitorProtocol {
     /// (e.g. 0xFFFFFFFF) would make the drain loop buffer inbound data
     /// forever, waiting for a packet that can never complete.
     static let maxPacketLength: UInt32 = 64 * 1024 * 1024
+
+    /// Bytes of framing every packet carries: a big-endian length and one type.
+    static let headerSize = 5
+
+    /// Frames a payload whose producer reserved `headerSize` bytes immediately
+    /// before it. The header is written in place and the returned `Data` owns a
+    /// copy, so the producer may recycle its storage after this call returns.
+    ///
+    /// `totalCount` includes both the reserved header and payload. Invalid or
+    /// oversized counts are rejected before `base` is read or mutated.
+    static func framedPacket(type: TBMonitorPacketType,
+                             base: UnsafePointer<UInt8>,
+                             totalCount: Int) -> Data? {
+        guard totalCount >= headerSize else { return nil }
+        let payloadCount = totalCount - headerSize
+        guard payloadCount <= Int(maxPacketLength) - 1 else { return nil }
+        let framedCount = 1 + payloadCount
+        guard let framed = UInt32(exactly: framedCount),
+              framed <= maxPacketLength else { return nil }
+
+        let mutable = UnsafeMutablePointer(mutating: base)
+        mutable[0] = UInt8((framed >> 24) & 0xFF)
+        mutable[1] = UInt8((framed >> 16) & 0xFF)
+        mutable[2] = UInt8((framed >> 8) & 0xFF)
+        mutable[3] = UInt8(framed & 0xFF)
+        mutable[4] = type.rawValue
+        return Data(bytes: base, count: totalCount)
+    }
 
     static func makePacket(type: TBMonitorPacketType, payload: Data) -> Data {
         var packet = Data()

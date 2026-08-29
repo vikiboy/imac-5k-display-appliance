@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import Foundation
 
 // Sender-side automation entry points.
@@ -16,6 +17,11 @@ import Foundation
 // no parallel connection logic — connect()/stop() are the same paths the GUI uses.
 @MainActor
 enum TBSenderAutomation {
+    enum ContinuousConnectPermissionAction: Equatable {
+        case startRetryLoop
+        case requestOnceAndSuspend
+    }
+
     private static var didHandleLaunchArguments = false
     private static var continuousConnectTask: Task<Void, Never>?
 
@@ -49,15 +55,19 @@ enum TBSenderAutomation {
         )
     }
 
-    static func suspendAutomaticReconnectAfterCaptureFailure(
+    /// A missing first frame is normally transient during login, wake, or a
+    /// cold WindowServer start. Keep both the in-process retry task and the
+    /// persisted monitor-mode marker intact so the next bounded retry (or a
+    /// later cable/login event) can recover without user intervention.
+    static func preserveAutomaticReconnectAfterTransientCaptureFailure(
         enabledFlagURL: URL? = nil,
         fileManager: FileManager = .default
     ) {
-        suspendAutomaticReconnect(
-            enabledFlagURL: enabledFlagURL,
-            fileManager: fileManager,
-            logReason: "capture produced no frames"
-        )
+        let marker = enabledFlagURL ?? senderEnabledFlagURL()
+        let markerState = fileManager.fileExists(atPath: marker.path)
+            ? "enabled marker preserved"
+            : "no enabled marker present"
+        NSLog("[automation] capture produced no frames; \(markerState); automatic reconnect remains eligible")
     }
 
     private static func suspendAutomaticReconnect(
@@ -127,7 +137,16 @@ enum TBSenderAutomation {
         case "connect":
             continuousConnectTask?.cancel()
             if flagEnabled(params["retry"] ?? params["autoreconnect"] ?? params["auto-reconnect"]) {
-                continuousConnectTask = Task { await connectContinuously(params) }
+                switch continuousConnectPermissionAction(
+                    screenCaptureGranted: CGPreflightScreenCaptureAccess()
+                ) {
+                case .startRetryLoop:
+                    continuousConnectTask = Task { await connectContinuously(params) }
+                case .requestOnceAndSuspend:
+                    continuousConnectTask = nil
+                    _ = CGRequestScreenCaptureAccess()
+                    suspendAutomaticReconnectForRequiredPermission()
+                }
             } else {
                 continuousConnectTask = nil
                 Task { _ = await connect(params) }
@@ -143,17 +162,25 @@ enum TBSenderAutomation {
 
     private static func connectContinuously(_ params: [String: String]) async {
         var attempt = 0
+        var consecutiveFailures = 0
         while !Task.isCancelled {
             attempt += 1
             NSLog("[automation] automatic connection attempt \(attempt)")
 
             if let session = await connect(params) {
                 if await waitForConnection(session) {
+                    let connectedAt = Date()
                     NSLog("[automation] automatic connection active; monitoring link")
                     while !Task.isCancelled && (session.isConnected || session.isStreaming) {
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                     }
                     guard !Task.isCancelled else { return }
+                    if Date().timeIntervalSince(connectedAt) >= 30 {
+                        // A genuinely usable session should make the next cable
+                        // recovery prompt again; only consecutive short-lived
+                        // failures need exponential backoff.
+                        consecutiveFailures = 0
+                    }
                     NSLog("[automation] connection lost; retrying")
                 } else {
                     NSLog("[automation] connection attempt did not become active; retrying")
@@ -165,7 +192,12 @@ enum TBSenderAutomation {
             }
 
             guard !Task.isCancelled else { return }
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            consecutiveFailures += 1
+            let retryDelay = automaticReconnectRetryDelaySeconds(
+                consecutiveFailures: consecutiveFailures
+            )
+            NSLog("[automation] next automatic connection attempt in \(retryDelay) seconds")
+            try? await Task.sleep(nanoseconds: UInt64(retryDelay) * 1_000_000_000)
         }
     }
 
@@ -178,6 +210,20 @@ enum TBSenderAutomation {
 
         if let transport = params["transport"] {
             session.transportKind = parseTransport(transport)
+        }
+        if let rawAudio = params["audio"] {
+            if let audioEnabled = parseAudioEnabled(rawAudio) {
+                session.audioEnabled = audioEnabled
+            } else {
+                NSLog("[automation] invalid audio value '\(rawAudio)' (ignored)")
+            }
+        }
+        if let rawLargeCursor = params["large-cursor"] ?? params["largeCursor"] {
+            if let largeCursorEnabled = parseAudioEnabled(rawLargeCursor) {
+                session.largeCursor = largeCursorEnabled
+            } else {
+                NSLog("[automation] invalid large-cursor value '\(rawLargeCursor)' (ignored)")
+            }
         }
 
         let rawPath = params["path"] ?? params["connection-path"] ?? params["connection"]
@@ -243,14 +289,19 @@ enum TBSenderAutomation {
         }
 
         if let mode = params["mode"] {
-            if let source = parseMode(mode) { session.captureSource = source }
-            else { NSLog("[automation] unknown mode '\(mode)' (ignored)") }
+            guard let source = parseMode(mode) else {
+                NSLog("[automation] unknown mode '\(mode)'; aborting connect")
+                return nil
+            }
+            session.captureSource = source
         }
         if let presetName = params["preset"] {
-            if let preset = parsePreset(presetName) { session.capturePreset = preset }
-            else { NSLog("[automation] unknown preset '\(presetName)' (ignored)") }
+            guard let preset = parsePreset(presetName) else {
+                NSLog("[automation] unknown preset '\(presetName)'; aborting connect")
+                return nil
+            }
+            session.capturePreset = preset
         }
-
         guard !session.receiverIP.isEmpty else {
             NSLog("[automation] no receiver IP resolved; aborting connect")
             return nil
@@ -362,6 +413,33 @@ enum TBSenderAutomation {
             return nil
         }
 
+        // A pinned path is already the user's routing decision. Sending a
+        // 16 MiB throughput benchmark before every automatic reconnect adds
+        // avoidable startup delay/heat and can lock out a single-client
+        // receiver before the real HELLO arrives. The actual monitor
+        // connection remains the authoritative reachability check and its
+        // watchdogs retry safely when the cable is absent. Only the genuinely
+        // comparative automatic/wired modes need to benchmark candidates.
+        if !requiresComparativePathProbe(preference) {
+            guard let candidate = TBConnectionDiagnostics.selectPinnedCandidate(
+                candidates,
+                preference: preference
+            ) else {
+                NSLog(
+                    "[automation] pinned \(preference.rawValue) path lacks matching advertised endpoint/interface metadata"
+                )
+                return nil
+            }
+            NSLog(
+                "[automation] selected pinned \(candidate.kind.rawValue) path on \(candidate.localInterfaceName) without throughput probe"
+            )
+            return TBConnectionMeasurement(
+                candidate: candidate,
+                throughputGbps: 0,
+                connectLatencyMilliseconds: 0
+            )
+        }
+
         let measurements = await Task.detached(priority: .userInitiated) {
             var values: [TBConnectionMeasurement] = []
             for candidate in candidates {
@@ -391,6 +469,17 @@ enum TBSenderAutomation {
         return selected
     }
 
+    static func requiresComparativePathProbe(
+        _ preference: TBConnectionPathPreference
+    ) -> Bool {
+        switch preference {
+        case .automatic, .wired:
+            return true
+        case .thunderbolt, .usb, .ethernet, .wifi:
+            return false
+        }
+    }
+
     private static func apply(
         _ measurement: TBConnectionMeasurement,
         receiver: TBDiscoveredReceiver,
@@ -418,6 +507,39 @@ enum TBSenderAutomation {
             return false
         default:
             return true
+        }
+    }
+
+    static func continuousConnectPermissionAction(
+        screenCaptureGranted: Bool
+    ) -> ContinuousConnectPermissionAction {
+        screenCaptureGranted ? .startRetryLoop : .requestOnceAndSuspend
+    }
+
+    /// Short failures back off enough to avoid repeatedly rebuilding capture
+    /// resources, while the ceiling keeps cable and wake recovery responsive.
+    static func automaticReconnectRetryDelaySeconds(
+        consecutiveFailures: Int
+    ) -> Int {
+        switch consecutiveFailures {
+        case ...1: return 2
+        case 2: return 4
+        case 3: return 8
+        default: return 15
+        }
+    }
+
+    /// An omitted or invalid automation value preserves the session's existing
+    /// audio setting. Explicit boolean values opt the session in or out.
+    static func parseAudioEnabled(_ value: String?) -> Bool? {
+        guard let value else { return nil }
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "0", "false", "no", "off":
+            return false
+        case "1", "true", "yes", "on":
+            return true
+        default:
+            return nil
         }
     }
 
@@ -465,7 +587,7 @@ enum TBSenderAutomation {
         case "1800p", "1800p60", "smooth1800": return .smooth1800p60
         case "2160p", "2160p60", "4k", "crisp": return .crisp2160p60
         case "retina4k", "retina4k60", "4096x2304", "imac4k": return .retina4k60
-        case "5k60", "native5k60": return .native5k60Experimental
+        case "5k60", "native5k60", "5kraw60": return .native5k60Experimental
         case "5k", "native", "5120x2880": return .native5k
         default: return nil
         }

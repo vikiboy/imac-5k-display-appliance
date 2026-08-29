@@ -162,13 +162,15 @@ final class TBConnectionDiagnosticsTests: XCTestCase {
     private func candidate(
         _ kind: TBConnectionPathKind,
         localIP: String,
-        receiverIP: String
+        receiverIP: String,
+        advertisedReceiverPath: TBConnectionPathKind? = nil
     ) -> TBConnectionCandidate {
         TBConnectionCandidate(
             kind: kind,
             localInterfaceName: kind == .thunderbolt ? "bridge0" : "en8",
             localIP: localIP,
-            receiverIP: receiverIP
+            receiverIP: receiverIP,
+            advertisedReceiverPath: advertisedReceiverPath
         )
     }
 
@@ -200,14 +202,108 @@ final class TBConnectionDiagnosticsTests: XCTestCase {
             hardwareKinds: ["en0": .ethernet, "en1": .wifi]
         )
 
-        XCTAssertTrue(candidates.contains(candidate(.thunderbolt, localIP: "169.254.50.31", receiverIP: "169.254.50.32")))
-        XCTAssertTrue(candidates.contains(candidate(.usb, localIP: "169.254.190.84", receiverIP: "169.254.190.85")))
+        XCTAssertTrue(candidates.contains(candidate(
+            .thunderbolt,
+            localIP: "169.254.50.31",
+            receiverIP: "169.254.50.32",
+            advertisedReceiverPath: .thunderbolt
+        )))
+        XCTAssertTrue(candidates.contains(candidate(
+            .usb,
+            localIP: "169.254.190.84",
+            receiverIP: "169.254.190.85",
+            advertisedReceiverPath: .usb
+        )))
+        XCTAssertFalse(candidates.contains {
+            $0.kind == .thunderbolt && $0.receiverIP == "169.254.190.85"
+        }, "the advertised USB endpoint must not become a Thunderbolt candidate")
+        XCTAssertFalse(candidates.contains {
+            $0.kind == .usb && $0.receiverIP == "169.254.50.32"
+        }, "the advertised Thunderbolt endpoint must not become a USB candidate")
+        XCTAssertEqual(
+            candidates.first(where: { $0.kind == .thunderbolt })?.advertisedReceiverPath,
+            .thunderbolt
+        )
         XCTAssertTrue(candidates.contains {
             $0.kind == .ethernet && $0.localIP == "10.77.77.1" && $0.receiverIP == "10.77.77.2"
         })
         XCTAssertTrue(candidates.contains {
             $0.kind == .wifi && $0.localIP == "192.168.178.93" && $0.receiverIP == "192.168.178.101"
         })
+    }
+
+    func testPinnedThunderboltRetriesAlwaysUseAdvertisedTBEndpointOnBridge0() {
+        let advertisedThunderbolt = TBConnectionCandidate(
+            kind: .thunderbolt,
+            localInterfaceName: "bridge0",
+            localIP: "169.254.200.1",
+            receiverIP: "169.254.200.2",
+            advertisedReceiverPath: .thunderbolt
+        )
+        let usbAddressMispairedWithBridge = TBConnectionCandidate(
+            kind: .thunderbolt,
+            localInterfaceName: "bridge0",
+            localIP: "169.254.200.1",
+            receiverIP: "169.254.1.2",
+            advertisedReceiverPath: .usb
+        )
+        let advertisedUSB = TBConnectionCandidate(
+            kind: .usb,
+            localInterfaceName: "en8",
+            localIP: "169.254.1.1",
+            receiverIP: "169.254.1.2",
+            advertisedReceiverPath: .usb
+        )
+        let wifi = TBConnectionCandidate(
+            kind: .wifi,
+            localInterfaceName: "en0",
+            localIP: "192.168.1.10",
+            receiverIP: "192.168.1.20",
+            advertisedReceiverPath: .wifi
+        )
+        let retryCandidateOrders = [
+            [usbAddressMispairedWithBridge, advertisedUSB, wifi, advertisedThunderbolt],
+            [advertisedThunderbolt, wifi, advertisedUSB, usbAddressMispairedWithBridge],
+            [wifi, usbAddressMispairedWithBridge, advertisedThunderbolt, advertisedUSB],
+        ]
+
+        for (retry, candidates) in retryCandidateOrders.enumerated() {
+            XCTAssertEqual(
+                TBConnectionDiagnostics.selectPinnedCandidate(candidates, preference: .thunderbolt),
+                advertisedThunderbolt,
+                "retry \(retry + 1) must retain the receiver-advertised TB endpoint"
+            )
+        }
+    }
+
+    func testPinnedThunderboltFailsClosedWithoutAdvertisedTBEndpointOnBridge0() {
+        let resolvedLinkLocal = TBConnectionCandidate(
+            kind: .thunderbolt,
+            localInterfaceName: "bridge0",
+            localIP: "169.254.200.1",
+            receiverIP: "169.254.99.2"
+        )
+        let advertisedTBOnOtherBridge = TBConnectionCandidate(
+            kind: .thunderbolt,
+            localInterfaceName: "bridge1",
+            localIP: "169.254.201.1",
+            receiverIP: "169.254.200.2",
+            advertisedReceiverPath: .thunderbolt
+        )
+        let advertisedUSB = TBConnectionCandidate(
+            kind: .usb,
+            localInterfaceName: "en8",
+            localIP: "169.254.1.1",
+            receiverIP: "169.254.1.2",
+            advertisedReceiverPath: .usb
+        )
+
+        XCTAssertNil(
+            TBConnectionDiagnostics.selectPinnedCandidate(
+                [resolvedLinkLocal, advertisedTBOnOtherBridge, advertisedUSB],
+                preference: .thunderbolt
+            )
+        )
     }
 
     func testAutoSelectionLetsGigabitEthernetBeatSlowerUSB() {

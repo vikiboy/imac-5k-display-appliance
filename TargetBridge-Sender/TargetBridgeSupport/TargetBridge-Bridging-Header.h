@@ -11,6 +11,8 @@
 
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import "../../TargetBridge-Shared/codec/tb_dpcm.h"
+#import "../../TargetBridge-Shared/codec/tb_dpcm_gpu.h"
 
 // MARK: - CGVirtualDisplay Private API (macOS 14+)
 
