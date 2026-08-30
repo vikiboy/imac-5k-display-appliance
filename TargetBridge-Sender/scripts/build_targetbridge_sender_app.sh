@@ -31,6 +31,7 @@ rm -rf "$DEST_APP"
 ditto "$SOURCE_APP" "$DEST_APP"
 mkdir -p "$DEST_APP/Contents/Resources/Legal"
 cp "$REPO_ROOT/LICENSE" "$DEST_APP/Contents/Resources/Legal/LICENSE.txt"
+cp "$REPO_ROOT/LICENSE" "$DEST_APP/Contents/Resources/Legal/LICENSE"
 cp "$REPO_ROOT/NOTICE.md" "$DEST_APP/Contents/Resources/Legal/NOTICE.md"
 echo "Cleaning extended attributes..."
 xattr -cr "$DEST_APP" || true

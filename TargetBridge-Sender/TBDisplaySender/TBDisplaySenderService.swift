@@ -561,6 +561,22 @@ struct TBPostFirstFrameProgressWatchdog {
 /// state is confined to `queue`; the two values the main thread polls
 /// (`sentFrames`, `lastCaptureFrameAt`) are guarded by a small lock instead of
 /// a per-frame hop back to main.
+private final class TBCaptureAttemptGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var active = true
+
+    var isActive: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return active
+    }
+
+    func deactivate() {
+        lock.lock()
+        active = false
+        lock.unlock()
+    }
+}
+
 private final class TBVideoPipeline: @unchecked Sendable {
     let queue = DispatchQueue(label: "fd.tbmonitor.sender.pipeline", qos: .userInteractive)
 
@@ -574,6 +590,7 @@ private final class TBVideoPipeline: @unchecked Sendable {
     private let rawMaxPendingVideoPackets: Int
     private let dpcmMaxPipelineFrames = 3
     private let onFirstFrame: @Sendable () -> Void
+    private let attemptGate: TBCaptureAttemptGate
 
     // Confined to `queue`.
     private var vtEncoder: VTCompressionSession?
@@ -585,6 +602,7 @@ private final class TBVideoPipeline: @unchecked Sendable {
     private var lastEncodedDisplayPTS: CMTime?
     private var frameRatePacer: TBFrameRatePacer
     private var ackSent: Bool
+    private var firstFrameReported = false
     private var running = false
 
     // Read from the main thread (fps timer / watchdog); guarded by `lock`.
@@ -604,6 +622,7 @@ private final class TBVideoPipeline: @unchecked Sendable {
          usesDPCM: Bool,
          usesRawNV12: Bool,
          ackAlreadySent: Bool,
+         attemptGate: TBCaptureAttemptGate,
          onFirstFrame: @escaping @Sendable () -> Void) {
         self.preset = preset
         self.codecType = codecType
@@ -621,6 +640,7 @@ private final class TBVideoPipeline: @unchecked Sendable {
         self.rawMaxPendingVideoPackets = min(max(rawPendingOverride ?? 2, 1), 2)
         self.frameRatePacer = TBFrameRatePacer(maximumFrameRate: preset.expectedFrameRate)
         self.ackSent = ackAlreadySent
+        self.attemptGate = attemptGate
         self.onFirstFrame = onFirstFrame
     }
 
@@ -655,7 +675,8 @@ private final class TBVideoPipeline: @unchecked Sendable {
     /// so a frame can never encode into an invalidated session.
     @discardableResult
     func stop() -> TBVideoPipelineStopOutcome {
-        queue.sync {
+        attemptGate.deactivate()
+        return queue.sync {
             running = false
             var dpcmDrainStatus: TBDPCMDrainStatus?
             if let dpcmEncoder {
@@ -792,6 +813,7 @@ private final class TBVideoPipeline: @unchecked Sendable {
     /// direct Thunderbolt Bridge link comfortably sustains.
     /// SCStream capture path. Must be dispatched onto `queue` by the caller.
     func encode(_ sampleBuffer: CMSampleBuffer) {
+        guard attemptGate.isActive else { return }
         markCaptureFrame()
         defer {
             if usesRawNV12, capturedFrames.isMultiple(of: 600) {
@@ -837,6 +859,7 @@ private final class TBVideoPipeline: @unchecked Sendable {
     /// CGDisplayStream capture path. Delivered directly on `queue` by
     /// `TBDirectDisplayStreamCapture`.
     func encodeDisplaySurface(_ surface: IOSurfaceRef, displayTime: UInt64) {
+        guard attemptGate.isActive else { return }
         markCaptureFrame()
         guard running else { return }
 
@@ -943,24 +966,14 @@ private final class TBVideoPipeline: @unchecked Sendable {
     }
 
     private func sendDPCMPacket(_ packet: Data) {
-        guard running else { return }
+        guard running, attemptGate.isActive else { return }
         guard pendingVideoPackets < dpcmMaxPipelineFrames else {
             droppedAfterEncodeFrames += 1
             return
         }
 
-        if !ackSent {
-            ackSent = true
-            let ack = TBMonitorCreateSessionAck(
-                accepted: true,
-                displayName: displayName,
-                displayID: displayID
-            )
-            if let ackPacket = TBMonitorProtocol.makeJSONPacket(type: .createSessionAck, value: ack) {
-                connection.send(content: ackPacket, completion: .contentProcessed({ _ in }))
-            }
-            onFirstFrame()
-        }
+        sendSessionAckIfNeeded()
+        reportFirstFrameIfNeeded()
 
         pendingVideoPackets += 1
         connection.send(content: packet, completion: .contentProcessed({ [weak self] _ in
@@ -989,20 +1002,7 @@ private final class TBVideoPipeline: @unchecked Sendable {
     }
 
     private func handleEncoded(_ sampleBuffer: CMSampleBuffer) {
-        guard running else { return }
-
-        if !ackSent {
-            ackSent = true
-            let ack = TBMonitorCreateSessionAck(
-                accepted: true,
-                displayName: displayName,
-                displayID: displayID
-            )
-            if let packet = TBMonitorProtocol.makeJSONPacket(type: .createSessionAck, value: ack) {
-                connection.send(content: packet, completion: .contentProcessed({ _ in }))
-            }
-            onFirstFrame()
-        }
+        guard running, attemptGate.isActive else { return }
 
         let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[CFString: Any]]
         let notSync = attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false
@@ -1020,6 +1020,8 @@ private final class TBVideoPipeline: @unchecked Sendable {
         }
 
         if let packet = buildFramePacket(from: sampleBuffer) {
+            sendSessionAckIfNeeded()
+            reportFirstFrameIfNeeded()
             pendingVideoPackets += 1
             connection.send(content: packet, completion: .contentProcessed({ [weak self] _ in
                 guard let self else { return }
@@ -1036,7 +1038,7 @@ private final class TBVideoPipeline: @unchecked Sendable {
     /// Payload: [1: format=1(NV12)][BE32 w][BE32 h][BE32 yStride][BE32 uvStride]
     ///          [Y plane: yStride*h][CbCr plane: uvStride*(h/2)]
     private func sendRawFrame(_ sampleBuffer: CMSampleBuffer) {
-        guard running,
+        guard running, attemptGate.isActive,
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
         else { return }
         // Backpressure: never pile frames on top of a network that can't keep up.
@@ -1090,20 +1092,6 @@ private final class TBVideoPipeline: @unchecked Sendable {
             return
         }
 
-        // Send the session ack on the first frame, mirroring the encoded path.
-        if !ackSent {
-            ackSent = true
-            let ack = TBMonitorCreateSessionAck(
-                accepted: true,
-                displayName: displayName,
-                displayID: displayID
-            )
-            if let packet = TBMonitorProtocol.makeJSONPacket(type: .createSessionAck, value: ack) {
-                connection.send(content: packet, completion: .contentProcessed({ _ in }))
-            }
-            onFirstFrame()
-        }
-
         // Build framing and planes into one allocation. Going through
         // makePacket(payload:) would copy this ~22 MB 5K frame into a second
         // Data value before every send (about 1.3 GB/s of avoidable copying at
@@ -1126,6 +1114,8 @@ private final class TBVideoPipeline: @unchecked Sendable {
             count: uvSize
         ))
 
+        sendSessionAckIfNeeded()
+        reportFirstFrameIfNeeded()
         pendingVideoPackets += 1
         connection.send(content: packet, completion: .contentProcessed({ [weak self] _ in
             guard let self else { return }
@@ -1134,6 +1124,28 @@ private final class TBVideoPipeline: @unchecked Sendable {
             }
         }))
         lock.lock(); _sentFrames += 1; lock.unlock()
+    }
+
+    private func sendSessionAckIfNeeded() {
+        guard !ackSent else { return }
+        ackSent = true
+        let ack = TBMonitorCreateSessionAck(
+            accepted: true,
+            displayName: displayName,
+            displayID: displayID
+        )
+        if let packet = TBMonitorProtocol.makeJSONPacket(type: .createSessionAck, value: ack) {
+            connection.send(content: packet, completion: .contentProcessed({ _ in }))
+        }
+    }
+
+    /// A connection ACK is sent only once, but every replacement capture
+    /// pipeline must prove that it produced a real frame. Keeping these two
+    /// facts separate makes wake/restart watchdogs meaningful.
+    private func reportFirstFrameIfNeeded() {
+        guard !firstFrameReported else { return }
+        firstFrameReported = true
+        onFirstFrame()
     }
 
     private func buildParamSetsPacket(from format: CMVideoFormatDescription, codecType: CMVideoCodecType) -> Data? {
@@ -1343,15 +1355,18 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
             source: .desktopMirror,
             language: language
         )
+        self.sourceDisplayState = TBMonotonicBooleanState(
+            value: Self.currentSourceDisplayAvailable(),
+            epoch: 1
+        )
         super.init()
-        registerWakeObservers()
+        registerDisplayLifecycleObservers()
         registerDisplayReconfigurationCallback()
     }
 
     deinit {
         for token in wakeObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(token)
-            DistributedNotificationCenter.default().removeObserver(token)
         }
         if displayReconfigurationCallbackRegistered {
             CGDisplayRemoveReconfigurationCallback(
@@ -1464,7 +1479,14 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
     }
     @Published var largeCursor: Bool
     @Published var preventDisplaySleep: Bool = true
-    @Published var autoRestartOnWake: Bool = true
+    @Published var autoRestartOnWake: Bool = true {
+        didSet {
+            guard autoRestartOnWake,
+                  activeProfile != nil,
+                  Self.currentSourceDisplayAvailable() else { return }
+            handleSourceDisplayAvailability(awake: true)
+        }
+    }
     @Published var verboseDisplayLogging: Bool = false {
         didSet {
             if verboseDisplayLogging {
@@ -1588,10 +1610,28 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
     var onRemoteDeactivateInputRequest: (() -> Void)?
     nonisolated(unsafe) private var wakeObservers: [NSObjectProtocol] = []
     private var isRestartingCaptureAfterWake = false
+    /// Legacy receivers never send surface-state packets, so availability
+    /// starts true and their established behavior is unchanged. A capable
+    /// receiver immediately replaces this with its fail-closed initial state.
+    private var receiverSurfaceState = TBMonotonicBooleanState(value: true)
+    private var sourceDisplayState = TBMonotonicBooleanState(value: true, epoch: 1)
+    private var lastSentSourceDisplayEpoch: UInt64?
+    private var lastAcknowledgedReceiverSurfaceEpoch: UInt64?
+    private var displayLifecycleTransitionInFlight = false
+    private var displayLifecycleTransitionGeneration: UInt64 = 0
+    private var captureAttemptGeneration: UInt64 = 0
+    private var captureAttemptFirstFrameSeen = false
+    private var captureAttemptGate: TBCaptureAttemptGate?
     nonisolated(unsafe) private var displayReconfigurationCallbackRegistered = false
     private var verboseLoggingTimer: Timer?
     private var captureHealthWatchdog: Timer?
     private var postFirstFrameProgressWatchdog = TBPostFirstFrameProgressWatchdog()
+
+    private enum CaptureStartResult {
+        case started(attempt: UInt64)
+        case cancelled
+        case failed
+    }
 
     nonisolated(unsafe) private static let displayReconfigurationCallback: CGDisplayReconfigurationCallBack = { displayID, flags, userInfo in
         guard let userInfo else { return }
@@ -1930,6 +1970,10 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         connectTimeoutWorkItem = nil
         recvBuffer.removeAll(keepingCapacity: false)
         activeProfile = nil
+        receiverSurfaceState = TBMonotonicBooleanState(value: true)
+        lastSentSourceDisplayEpoch = nil
+        lastAcknowledgedReceiverSurfaceEpoch = nil
+        displayLifecycleTransitionGeneration &+= 1
         activeCodecType = nil
         activeCodecName = nil
         lastConnectionStateDetail = nil
@@ -2177,6 +2221,7 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         teardownCompletion: (@MainActor @Sendable () -> Void)? = nil
     ) {
         let connectionToClose = connection
+        invalidateCaptureAttempt()
         if persistArrangement {
             persistExtendedDisplayArrangementIfNeeded()
         }
@@ -2225,6 +2270,10 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
             currentSession.destroy()
         }
         activeProfile = nil
+        receiverSurfaceState = TBMonotonicBooleanState(value: true)
+        lastSentSourceDisplayEpoch = nil
+        lastAcknowledgedReceiverSurfaceEpoch = nil
+        displayLifecycleTransitionGeneration &+= 1
         activeCodecType = nil
         activeCodecName = nil
         isConnected = false
@@ -2459,6 +2508,25 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         send(packet)
     }
 
+    private func sendSourceDisplayStateIfNeeded(force: Bool = false) {
+        guard activeProfile?.supportsDisplayLifecycle == true else { return }
+        guard force ||
+                lastSentSourceDisplayEpoch != sourceDisplayState.epoch ||
+                lastAcknowledgedReceiverSurfaceEpoch != receiverSurfaceState.epoch
+        else { return }
+        guard let packet = TBMonitorProtocol.makeJSONPacket(
+            type: .sourceDisplayState,
+            value: TBMonitorSourceDisplayState(
+                awake: sourceDisplayState.value,
+                epoch: sourceDisplayState.epoch,
+                receiverEpoch: receiverSurfaceState.epoch
+            )
+        ) else { return }
+        send(packet)
+        lastSentSourceDisplayEpoch = sourceDisplayState.epoch
+        lastAcknowledgedReceiverSurfaceEpoch = receiverSurfaceState.epoch
+    }
+
     private func sendTeardownAndClose(
         reason: String,
         over connection: NWConnection?,
@@ -2536,6 +2604,13 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
             switch type {
             case .displayProfile:
                 handleDisplayProfile(payload)
+            case .receiverSurfaceState:
+                if let state = TBMonitorProtocol.decodeJSON(
+                    TBMonitorReceiverSurfaceState.self,
+                    from: payload
+                ) {
+                    handleReceiverSurfaceState(state)
+                }
             case .inputEvent:
                 if inputControlRole == .receiverMaster,
                    let event = TBMonitorProtocol.decodeJSON(TBMonitorInputEvent.self, from: payload) {
@@ -2938,6 +3013,12 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         displayProfileTimeoutWorkItem?.cancel()
         displayProfileTimeoutWorkItem = nil
         activeProfile = profile
+        if profile.supportsDisplayLifecycle == true {
+            // A capable receiver must explicitly publish its current Aqua
+            // surface before any capture work begins. Legacy profiles retain
+            // the compatibility default established at connect().
+            receiverSurfaceState = TBMonotonicBooleanState(value: false)
+        }
         if let supportsHEVCDecode = profile.supportsHEVCDecode {
             receiverSupportsHEVCDecodeHint = supportsHEVCDecode
         }
@@ -2950,7 +3031,9 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         receiverSupportsNightShift = profile.supportsNightShift ?? false
         receiverSupportsTrueTone = profile.supportsTrueTone ?? false
         receiverPanelText = TBDisplaySenderL10n.receiverSummary(profile, language: language)
+        lastSentSourceDisplayEpoch = nil
         sendHello()
+        sendSourceDisplayStateIfNeeded(force: true)
         sendInputControlModeUpdate()
         sendBrightnessUpdate()
         sendVolumeUpdate()
@@ -2974,7 +3057,7 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
 
             // A headless Sender may still expose a sleeping physical display.
             // Wake and hold the graphical session before virtual display setup.
-            self.beginCaptureActivity()
+            self.beginCaptureActivity(wakeDisplay: self.shouldProduceDisplayFrames)
             self.setStatus(.creatingVirtualDisplay)
             self.baselineDisplayIDs = self.captureSource == .extendedDesktop
                 ? await self.fetchShareableDisplayIDs()
@@ -3037,35 +3120,69 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
             // tears down a healthy stream ~4s in. See onFirstFrame wiring below.
             self.sessionAckSent = false
             self.captureBlockedByScreenRecordingPermission = false
-            self.setStatus(.startingCapture(self.capturePreset.description, self.captureSource))
-            let started = await self.startCapture(for: profile)
-            guard started else {
-                if self.captureBlockedByScreenRecordingPermission {
-                    self.captureBlockedByScreenRecordingPermission = false
-                    TBSenderAutomation.suspendAutomaticReconnectForRequiredPermission()
-                    self.stop(
-                        resetStatusTo: nil,
-                        persistArrangement: false,
-                        teardownReason: "sender_user_stop"
-                    )
-                } else {
-                    self.stop(resetStatusTo: nil)
-                }
-                return
+            if self.shouldProduceDisplayFrames {
+                await self.resumeCaptureForDisplayLifecycle(
+                    profile: profile,
+                    reason: "initial receiver readiness"
+                )
+            } else {
+                // Keep the receiver-backed virtual display (and therefore the
+                // user's native arrangement) alive while capture/GPU/network
+                // frame production remains stopped.
+                self.endCaptureActivity()
+                self.setStatus(.startingCapture(
+                    self.capturePreset.description,
+                    self.captureSource
+                ))
+                self.scheduleDisplayLifecycleReconciliation(
+                    reason: "initial receiver surface unavailable"
+                )
             }
-
-            if self.captureSource == .extendedDesktop {
-                self.scheduleExtendedDesktopRecovery(for: self.session.displayID)
-            } else if self.captureSource == .desktopMirror {
-                self.scheduleDesktopMirrorRecovery(for: self.session.displayID)
-            }
-
-            self.setStatus(.captureStartedWaitingFirstFrame)
-            self.startFirstFrameWatchdog()
         }
     }
 
-    private func startCapture(for profile: TBMonitorDisplayProfile) async -> Bool {
+    private func beginCaptureAttempt() -> (generation: UInt64, gate: TBCaptureAttemptGate) {
+        captureAttemptGate?.deactivate()
+        captureAttemptGeneration &+= 1
+        if captureAttemptGeneration == 0 { captureAttemptGeneration = 1 }
+        captureAttemptFirstFrameSeen = false
+        let gate = TBCaptureAttemptGate()
+        captureAttemptGate = gate
+        return (captureAttemptGeneration, gate)
+    }
+
+    private func invalidateCaptureAttempt() {
+        captureAttemptGate?.deactivate()
+        captureAttemptGate = nil
+        captureAttemptGeneration &+= 1
+        if captureAttemptGeneration == 0 { captureAttemptGeneration = 1 }
+        captureAttemptFirstFrameSeen = false
+    }
+
+    private func captureAttemptIsCurrent(
+        _ attempt: UInt64,
+        gate: TBCaptureAttemptGate,
+        connection expectedConnection: NWConnection
+    ) -> Bool {
+        captureAttemptGeneration == attempt &&
+            captureAttemptGate === gate &&
+            gate.isActive &&
+            connection === expectedConnection &&
+            shouldProduceDisplayFrames
+    }
+
+    private func abandonCaptureStart(
+        pipeline candidate: TBVideoPipeline,
+        gate: TBCaptureAttemptGate
+    ) {
+        gate.deactivate()
+        if pipeline === candidate {
+            _ = candidate.stop()
+            pipeline = nil
+        }
+    }
+
+    private func startCapture(for profile: TBMonitorDisplayProfile) async -> CaptureStartResult {
         do {
             guard CGPreflightScreenCaptureAccess() else {
                 captureBlockedByScreenRecordingPermission = true
@@ -3074,7 +3191,7 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
                     TBDisplaySenderL10n.missingScreenRecordingPermission(language: language)
                 ))
                 TBLog.connection.error("capture: screen recording permission missing; automatic reconnect suspended")
-                return false
+                return .failed
             }
 
             let preset = capturePreset
@@ -3086,7 +3203,7 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
                 TBLog.connection.error(
                     "capture: DPCM was required but receiver capability is unavailable; refusing codec fallback"
                 )
-                return false
+                return .failed
             }
             let usesDPCM = dpcmEnabled(for: profile)
             let usesRawNV12 = !usesDPCM && rawNV12Enabled(for: profile)
@@ -3098,7 +3215,10 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
             )
             activeCodecType = (usesDPCM || usesRawNV12) ? nil : codecType
             activeCodecName = codecName
-            guard let connection else { return false }
+            guard let connection else { return .failed }
+            let captureAttempt = beginCaptureAttempt()
+            let attempt = captureAttempt.generation
+            let attemptGate = captureAttempt.gate
 
             // The encode/send pipeline runs entirely on its own serial queue,
             // off the main thread, so SwiftUI layout can never stall frame
@@ -3113,23 +3233,53 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
                 usesDPCM: usesDPCM,
                 usesRawNV12: usesRawNV12,
                 ackAlreadySent: sessionAckSent,
+                attemptGate: attemptGate,
                 onFirstFrame: { [weak self] in
-                    Task { @MainActor in self?.handleFirstEncodedFrame() }
+                    Task { @MainActor in
+                        self?.handleFirstEncodedFrame(attempt: attempt)
+                    }
                 }
             )
-            guard pipeline.start() else { return false }
+            guard pipeline.start() else {
+                attemptGate.deactivate()
+                return .failed
+            }
             self.pipeline = pipeline
             TBLog.connection.info("capture: pipeline started preset=\(preset.rawValue, privacy: .public) source=\(String(describing: self.captureSource), privacy: .public) codec=\(codecName, privacy: .public) dpcm=\(usesDPCM, privacy: .public) rawNV12=\(usesRawNV12, privacy: .public)")
 
             let display: SCDisplay
             if captureSource == .desktopMirror {
                 if let mirrorDisplay = try await resolveMirrorCaptureDisplay() {
+                    guard captureAttemptIsCurrent(
+                        attempt,
+                        gate: attemptGate,
+                        connection: connection
+                    ) else {
+                        abandonCaptureStart(pipeline: pipeline, gate: attemptGate)
+                        return .cancelled
+                    }
                     display = mirrorDisplay
                 } else if let fallbackDisplayID = directMirrorFallbackDisplayID() {
+                    guard captureAttemptIsCurrent(
+                        attempt,
+                        gate: attemptGate,
+                        connection: connection
+                    ) else {
+                        abandonCaptureStart(pipeline: pipeline, gate: attemptGate)
+                        return .cancelled
+                    }
                     TBLog.connection.warning("capture: no virtual ScreenCaptureKit display; using direct fallback id=\(fallbackDisplayID, privacy: .public)")
-                    return startDirectDisplayStream(displayID: fallbackDisplayID, preset: preset)
+                    return startDirectDisplayStream(
+                        displayID: fallbackDisplayID,
+                        preset: preset,
+                        pipeline: pipeline,
+                        attempt: attempt,
+                        gate: attemptGate,
+                        connection: connection
+                    ) ? .started(attempt: attempt) : .failed
                 } else {
-                    return false
+                    abandonCaptureStart(pipeline: pipeline, gate: attemptGate)
+                    return .failed
                 }
             } else {
                 guard session.displayID != kCGNullDirectDisplay else {
@@ -3141,10 +3291,26 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
                     )
                 }
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                guard captureAttemptIsCurrent(
+                    attempt,
+                    gate: attemptGate,
+                    connection: connection
+                ) else {
+                    abandonCaptureStart(pipeline: pipeline, gate: attemptGate)
+                    return .cancelled
+                }
                 if let targetDisplay = content.displays.first(where: { $0.displayID == session.displayID }) {
                     display = targetDisplay
                 } else {
                     display = try await waitForCaptureDisplay()
+                    guard captureAttemptIsCurrent(
+                        attempt,
+                        gate: attemptGate,
+                        connection: connection
+                    ) else {
+                        abandonCaptureStart(pipeline: pipeline, gate: attemptGate)
+                        return .cancelled
+                    }
                 }
                 guard display.displayID == session.displayID else {
                     throw NSError(
@@ -3210,6 +3376,11 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
             delegate.onError = { [weak self] error in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    guard self.captureAttemptIsCurrent(
+                        attempt,
+                        gate: attemptGate,
+                        connection: connection
+                    ) else { return }
                     self.setStatus(.captureError(self.formattedCaptureErrorMessage(for: error)))
                     self.stop(resetStatusTo: nil)
                 }
@@ -3232,20 +3403,34 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
                 )
             }
             try await stream.startCapture()
+            guard captureAttemptIsCurrent(
+                attempt,
+                gate: attemptGate,
+                connection: connection
+            ) else {
+                try? stream.removeStreamOutput(delegate, type: .screen)
+                try? stream.removeStreamOutput(delegate, type: .audio)
+                stream.stopCapture(completionHandler: nil)
+                abandonCaptureStart(pipeline: pipeline, gate: attemptGate)
+                return .cancelled
+            }
             scStream = stream
             isStreaming = true
             if usesCursorOverlay { startCursorUpdates(displayID: display.displayID) }
             beginCaptureActivity(wakeDisplay: false)
             startFPSTimer()
             startCaptureWatchdog()
-            return true
+            return .started(attempt: attempt)
         } catch {
+            if captureAttemptGate?.isActive != true || !shouldProduceDisplayFrames {
+                return .cancelled
+            }
             if error.localizedDescription.hasPrefix("no virtual SCDisplay available") {
                 setStatus(.noShareableDisplay(error.localizedDescription))
             } else {
                 setStatus(.captureDesktopError(formattedCaptureErrorMessage(for: error)))
             }
-            return false
+            return .failed
         }
     }
 
@@ -3282,8 +3467,17 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         return nil
     }
 
-    private func startDirectDisplayStream(displayID: CGDirectDisplayID, preset: TBDisplayCapturePreset) -> Bool {
-        guard let pipeline else { return false }
+    private func startDirectDisplayStream(
+        displayID: CGDirectDisplayID,
+        preset: TBDisplayCapturePreset,
+        pipeline: TBVideoPipeline,
+        attempt: UInt64,
+        gate: TBCaptureAttemptGate,
+        connection: NWConnection
+    ) -> Bool {
+        guard self.pipeline === pipeline,
+              captureAttemptIsCurrent(attempt, gate: gate, connection: connection)
+        else { return false }
         let usesCursorOverlay = inputControlRole.usesLowLatencyCursorOverlay(
             largeCursorEnabled: largeCursor
         )
@@ -3299,6 +3493,11 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         // runs there, so encode happens off the main thread with no extra hop.
         let directCapture = TBDirectDisplayStreamCapture(pipeline: pipeline, queue: pipeline.queue)
         guard directCapture.start(displayID: displayID, preset: preset, showCursor: !usesCursorOverlay) else {
+            return false
+        }
+        guard captureAttemptIsCurrent(attempt, gate: gate, connection: connection) else {
+            directCapture.stop()
+            abandonCaptureStart(pipeline: pipeline, gate: gate)
             return false
         }
 
@@ -3792,37 +3991,51 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         }
     }
 
-    private func registerWakeObservers() {
-        let handler: @Sendable (Notification) -> Void = { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handleSystemWake()
-            }
+    private func registerDisplayLifecycleObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        let register: (Notification.Name, Bool) -> Void = { [weak self] name, awake in
+            self?.wakeObservers.append(
+                center.addObserver(
+                    forName: name,
+                    object: nil,
+                    queue: nil
+                ) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        self?.handleSourceDisplayAvailability(awake: awake)
+                    }
+                }
+            )
         }
 
-        wakeObservers.append(
-            NSWorkspace.shared.notificationCenter.addObserver(
-                forName: NSWorkspace.screensDidWakeNotification,
-                object: nil,
-                queue: nil,
-                using: handler
-            )
-        )
-        wakeObservers.append(
-            DistributedNotificationCenter.default().addObserver(
-                forName: Notification.Name("com.apple.screenIsUnlocked"),
-                object: nil,
-                queue: nil,
-                using: handler
-            )
-        )
-        wakeObservers.append(
-            DistributedNotificationCenter.default().addObserver(
-                forName: Notification.Name("com.apple.screensaver.didstop"),
-                object: nil,
-                queue: nil,
-                using: handler
-            )
-        )
+        // These are public NSWorkspace notifications. No private lock or
+        // screensaver notification is treated as an authorization signal.
+        register(NSWorkspace.willSleepNotification, false)
+        register(NSWorkspace.screensDidSleepNotification, false)
+        register(NSWorkspace.sessionDidResignActiveNotification, false)
+        register(NSWorkspace.didWakeNotification, true)
+        register(NSWorkspace.screensDidWakeNotification, true)
+        register(NSWorkspace.sessionDidBecomeActiveNotification, true)
+    }
+
+    /// Seed lifecycle state from public CoreGraphics facts so an app launched
+    /// after a display transition does not assume that its source is drawable.
+    private static func currentSourceDisplayAvailable() -> Bool {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+              session[kCGSessionOnConsoleKey as String] as? Bool == true,
+              session[kCGSessionLoginDoneKey as String] as? Bool == true
+        else { return false }
+
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else {
+            return false
+        }
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &displays, &count) == .success else {
+            return false
+        }
+        return displays.prefix(Int(count)).contains {
+            CGDisplayIsActive($0) != 0 && CGDisplayIsAsleep($0) == 0
+        }
     }
 
     private func registerDisplayReconfigurationCallback() {
@@ -3982,9 +4195,95 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         )
     }
 
-    private func handleSystemWake() {
-        guard autoRestartOnWake else { return }
-        scheduleCaptureRestart(reason: "system wake", delaySeconds: 1.0)
+    private func handleSourceDisplayAvailability(awake: Bool) {
+        if !TBDisplayLifecyclePolicy.shouldApplySourceTransition(
+            awake: awake,
+            autoRestartOnWake: autoRestartOnWake
+        ) {
+            TBLog.connection.info(
+                "display lifecycle: automatic wake resume disabled by preference"
+            )
+            return
+        }
+        guard sourceDisplayState.value != awake else { return }
+        var nextEpoch = sourceDisplayState.epoch &+ 1
+        if nextEpoch == 0 { nextEpoch = 1 }
+        guard sourceDisplayState.apply(value: awake, epoch: nextEpoch) == .applied else {
+            return
+        }
+        TBLog.connection.info(
+            "display lifecycle: sourceAwake=\(awake, privacy: .public) epoch=\(nextEpoch, privacy: .public)"
+        )
+        scheduleDisplayLifecycleReconciliation(reason: awake ? "source wake" : "source sleep")
+    }
+
+    private func handleReceiverSurfaceState(_ state: TBMonitorReceiverSurfaceState) {
+        switch receiverSurfaceState.apply(value: state.available, epoch: state.epoch) {
+        case .applied:
+            TBLog.connection.info(
+                "display lifecycle: receiverSurface=\(state.available, privacy: .public) epoch=\(state.epoch, privacy: .public)"
+            )
+            scheduleDisplayLifecycleReconciliation(reason: "receiver surface state")
+        case .duplicate:
+            break
+        case .stale:
+            TBLog.connection.info(
+                "display lifecycle: ignored stale receiver surface epoch=\(state.epoch, privacy: .public)"
+            )
+        }
+    }
+
+    private var shouldProduceDisplayFrames: Bool {
+        TBDisplayLifecyclePolicy.shouldProduceFrames(
+            sourceAwake: sourceDisplayState.value,
+            receiverSurfaceAvailable: receiverSurfaceState.value,
+            peerSupportsLifecycle: activeProfile?.supportsDisplayLifecycle == true
+        )
+    }
+
+    private func scheduleDisplayLifecycleReconciliation(reason: String) {
+        displayLifecycleTransitionGeneration &+= 1
+        // Close the per-frame gate immediately, even when a prior async
+        // capture start is still suspended and this reconciliation task must
+        // wait for it to return.
+        if !shouldProduceDisplayFrames {
+            invalidateCaptureAttempt()
+        }
+        guard !displayLifecycleTransitionInFlight else { return }
+        displayLifecycleTransitionInFlight = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            repeat {
+                let generation = self.displayLifecycleTransitionGeneration
+                let shouldProduce = self.shouldProduceDisplayFrames
+
+                if shouldProduce {
+                    // Reliable NWConnection sends preserve this control packet
+                    // ahead of the first frame produced after wake.
+                    self.sendSourceDisplayStateIfNeeded()
+                    if !self.isStreaming,
+                       let profile = self.activeProfile,
+                       self.session.displayID != kCGNullDirectDisplay {
+                        await self.resumeCaptureForDisplayLifecycle(
+                            profile: profile,
+                            reason: reason
+                        )
+                    }
+                } else {
+                    if self.isStreaming {
+                        self.pauseCaptureForDisplayLifecycle(reason: reason)
+                    }
+                    // Stop and drain the producer before ordering source-sleep
+                    // behind its last whole frame on the reliable connection.
+                    self.sendSourceDisplayStateIfNeeded()
+                }
+
+                if generation == self.displayLifecycleTransitionGeneration {
+                    break
+                }
+            } while self.activeProfile != nil
+            self.displayLifecycleTransitionInFlight = false
+        }
     }
 
     func restartCaptureNow() {
@@ -4015,6 +4314,38 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
 
     private func softRestartCapture(for profile: TBMonitorDisplayProfile) async {
         // Tear down only the capture pipeline — keep the network connection and virtual display.
+        let pipelineStopOutcome = stopCapturePipelinePreservingSession()
+        if pipelineStopOutcome.requiresProcessTermination {
+            stop(
+                resetStatusTo: .captureError("DPCM GPU encoder became unresponsive"),
+                persistArrangement: false,
+                teardownReason: "sender_dpcm_gpu_quarantine"
+            )
+            requestProcessRecoveryIfNeeded(
+                after: pipelineStopOutcome,
+                context: "soft capture restart"
+            )
+            return
+        }
+
+        beginCaptureActivity(wakeDisplay: shouldProduceDisplayFrames)
+        switch await startCapture(for: profile) {
+        case .started(let attempt):
+            if captureAttemptGeneration == attempt && !captureAttemptFirstFrameSeen {
+                setStatus(.captureStartedWaitingFirstFrame)
+                startFirstFrameWatchdog(for: attempt)
+            }
+        case .cancelled:
+            return
+        case .failed:
+            NSLog("TargetBridge: soft restart after wake failed — falling back to full stop")
+            stop(resetStatusTo: .captureError("capture restart after wake failed"))
+        }
+    }
+
+    @discardableResult
+    private func stopCapturePipelinePreservingSession() -> TBVideoPipelineStopOutcome {
+        invalidateCaptureAttempt()
         cursorTimer?.invalidate()
         cursorTimer = nil
         fpsTimer?.invalidate()
@@ -4038,35 +4369,81 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         endCaptureActivity()
         let pipelineStopOutcome = pipeline?.stop() ?? .stopped
         pipeline = nil
-        if pipelineStopOutcome.requiresProcessTermination {
-            stop(
-                resetStatusTo: .captureError("DPCM GPU encoder became unresponsive"),
-                persistArrangement: false,
-                teardownReason: "sender_dpcm_gpu_quarantine"
-            )
-            requestProcessRecoveryIfNeeded(
-                after: pipelineStopOutcome,
-                context: "soft capture restart"
-            )
-            return
-        }
         isStreaming = false
         liveMetrics.senderFPS = 0
         senderFPS = 0
         sentSnapshot = 0
         cursorDisplayID = kCGNullDirectDisplay
         lastCursorPacket = nil
-
-        beginCaptureActivity()
-        let started = await startCapture(for: profile)
-        if !started {
-            NSLog("TargetBridge: soft restart after wake failed — falling back to full stop")
-            stop(resetStatusTo: .captureError("capture restart after wake failed"))
-        }
+        return pipelineStopOutcome
     }
 
-    private func handleFirstEncodedFrame() {
-        guard !sessionAckSent else { return }
+    private func pauseCaptureForDisplayLifecycle(reason: String) {
+        let outcome = stopCapturePipelinePreservingSession()
+        if outcome.requiresProcessTermination {
+            stop(
+                resetStatusTo: .captureError("DPCM GPU encoder became unresponsive"),
+                persistArrangement: false,
+                teardownReason: "sender_dpcm_gpu_quarantine"
+            )
+            requestProcessRecoveryIfNeeded(
+                after: outcome,
+                context: "display lifecycle pause"
+            )
+            return
+        }
+        NSLog("TargetBridge: display lifecycle paused capture (%@)", reason)
+    }
+
+    private func resumeCaptureForDisplayLifecycle(
+        profile: TBMonitorDisplayProfile,
+        reason: String
+    ) async {
+        guard shouldProduceDisplayFrames,
+              activeProfile?.receiverName == profile.receiverName,
+              connection != nil else { return }
+        captureBlockedByScreenRecordingPermission = false
+        setStatus(.startingCapture(capturePreset.description, captureSource))
+        let captureResult = await startCapture(for: profile)
+        let attempt: UInt64
+        switch captureResult {
+        case .started(let startedAttempt):
+            attempt = startedAttempt
+        case .cancelled:
+            return
+        case .failed:
+            if captureBlockedByScreenRecordingPermission {
+                captureBlockedByScreenRecordingPermission = false
+                TBSenderAutomation.suspendAutomaticReconnectForRequiredPermission()
+                stop(
+                    resetStatusTo: nil,
+                    persistArrangement: false,
+                    teardownReason: "sender_user_stop"
+                )
+            } else {
+                stop(resetStatusTo: .captureError("capture resume after display wake failed"))
+            }
+            return
+        }
+        guard captureAttemptGeneration == attempt,
+              shouldProduceDisplayFrames else { return }
+        if captureSource == .extendedDesktop {
+            scheduleExtendedDesktopRecovery(for: session.displayID)
+        } else if captureSource == .desktopMirror {
+            scheduleDesktopMirrorRecovery(for: session.displayID)
+        }
+        if !captureAttemptFirstFrameSeen {
+            setStatus(.captureStartedWaitingFirstFrame)
+            startFirstFrameWatchdog(for: attempt)
+        }
+        NSLog("TargetBridge: display lifecycle resumed capture (%@)", reason)
+    }
+
+    private func handleFirstEncodedFrame(attempt: UInt64) {
+        guard captureAttemptGeneration == attempt,
+              captureAttemptGate?.isActive == true,
+              !captureAttemptFirstFrameSeen else { return }
+        captureAttemptFirstFrameSeen = true
         sessionAckSent = true
         firstFrameTimer?.invalidate()
         firstFrameTimer = nil
@@ -4098,16 +4475,19 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         }
     }
 
-    private func startFirstFrameWatchdog() {
+    private func startFirstFrameWatchdog(for attempt: UInt64) {
         // If the first encoded frame already arrived (handleFirstEncodedFrame ran
         // while startCapture was still suspended), there is nothing to watch for —
         // arming would only leave a no-op timer dangling for 4s.
-        guard !sessionAckSent else { return }
+        guard captureAttemptGeneration == attempt,
+              !captureAttemptFirstFrameSeen else { return }
         firstFrameTimer?.invalidate()
         firstFrameTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { [weak self] _ in
             guard let self else { return }
             MainActor.assumeIsolated {
-                guard isStreaming, !sessionAckSent else { return }
+                guard isStreaming,
+                      captureAttemptGeneration == attempt,
+                      !captureAttemptFirstFrameSeen else { return }
                 let sentFrames = self.pipeline?.sentFramesSnapshot ?? 0
                 TBLog.connection.error("capture: first-frame timeout preset=\(self.capturePreset.rawValue, privacy: .public) source=\(String(describing: self.captureSource), privacy: .public) connected=\(self.isConnected, privacy: .public) sentFrames=\(sentFrames, privacy: .public)")
                 if self.capturePreset == .retina4k60 || self.capturePreset == .native5k || self.capturePreset == .native5k60Experimental {
@@ -4202,7 +4582,7 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
     }
 
     private func processAudio(_ sampleBuffer: CMSampleBuffer) {
-        guard shouldRelayAudio else { return }
+        guard isStreaming, shouldRelayAudio else { return }
         guard let data = audioConverter.convert(sampleBuffer: sampleBuffer) else { return }
         let packet = TBMonitorProtocol.makePacket(type: .audioFrame, payload: data)
         send(packet)

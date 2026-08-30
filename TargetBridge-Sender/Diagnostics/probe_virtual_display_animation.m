@@ -12,6 +12,17 @@ static const NSInteger TBDefaultDurationSeconds = 60;
 // unattended diagnostic exits on its own and never writes captured frames.
 static const NSInteger TBMaximumDurationSeconds = 3600;
 
+static BOOL TBDisplayBackingPixels(CGDirectDisplayID displayID,
+                                   size_t *pixelWidth,
+                                   size_t *pixelHeight) {
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayID);
+    if (!mode) return NO;
+    if (pixelWidth) *pixelWidth = CGDisplayModeGetPixelWidth(mode);
+    if (pixelHeight) *pixelHeight = CGDisplayModeGetPixelHeight(mode);
+    CGDisplayModeRelease(mode);
+    return YES;
+}
+
 static NSScreen *TBExactRetinaTargetScreen(CGDirectDisplayID requestedDisplayID) {
     const CGDirectDisplayID mainDisplay = CGMainDisplayID();
     for (NSScreen *screen in NSScreen.screens) {
@@ -19,6 +30,10 @@ static NSScreen *TBExactRetinaTargetScreen(CGDirectDisplayID requestedDisplayID)
         if (!number) continue;
         const CGDirectDisplayID displayID = number.unsignedIntValue;
         const NSSize points = screen.frame.size;
+        size_t pixelWidth = 0;
+        size_t pixelHeight = 0;
+        const BOOL hasBackingPixels =
+            TBDisplayBackingPixels(displayID, &pixelWidth, &pixelHeight);
         const BOOL identityMatches = requestedDisplayID != 0
             ? displayID == requestedDisplayID
             : [screen.localizedName hasPrefix:@"TB Extend"];
@@ -27,8 +42,7 @@ static NSScreen *TBExactRetinaTargetScreen(CGDirectDisplayID requestedDisplayID)
             fabs(points.width - 2560.0) < 0.5 &&
             fabs(points.height - 1440.0) < 0.5 &&
             fabs(screen.backingScaleFactor - 2.0) < 0.01 &&
-            CGDisplayPixelsWide(displayID) == 5120 &&
-            CGDisplayPixelsHigh(displayID) == 2880) {
+            hasBackingPixels && pixelWidth == 5120 && pixelHeight == 2880) {
             return screen;
         }
     }
@@ -108,8 +122,9 @@ static NSScreen *TBExactRetinaTargetScreen(CGDirectDisplayID requestedDisplayID)
         NSBackgroundColorAttributeName:
             [NSColor colorWithCalibratedWhite:1.0 alpha:0.82]
     };
-    [@"TargetBridge native Retina motion test" drawAtPoint:NSMakePoint(72.0, 220.0)
-                                             withAttributes:titleAttributes];
+    [@"iMac 5K Display Appliance — native Retina motion test"
+        drawAtPoint:NSMakePoint(72.0, 220.0)
+      withAttributes:titleAttributes];
     NSString *detail = [NSString stringWithFormat:
         @"2560 × 1440 points → 5120 × 2880 pixels | tick %lu\n"
          "Fine text: Il1 0O rn m 0123456789  RGB 4:4:4  P3",
@@ -135,9 +150,33 @@ static NSScreen *TBExactRetinaTargetScreen(CGDirectDisplayID requestedDisplayID)
     (void)notification;
     NSScreen *screen = TBExactRetinaTargetScreen(self.requestedDisplayID);
     if (!screen) {
+        for (NSScreen *candidate in NSScreen.screens) {
+            NSNumber *number =
+                candidate.deviceDescription[@"NSScreenNumber"];
+            const CGDirectDisplayID candidateID =
+                (CGDirectDisplayID)number.unsignedIntValue;
+            size_t pixelWidth = 0;
+            size_t pixelHeight = 0;
+            (void)TBDisplayBackingPixels(candidateID, &pixelWidth,
+                                         &pixelHeight);
+            fprintf(stderr,
+                    "TB_RETINA_MOTION candidate display=%u name=%s "
+                    "points=%.0fx%.0f modePixels=%zux%zu "
+                    "displayPixels=%zux%zu scale=%.3f main=%s\n",
+                    (unsigned int)candidateID,
+                    candidate.localizedName.UTF8String,
+                    candidate.frame.size.width,
+                    candidate.frame.size.height,
+                    pixelWidth,
+                    pixelHeight,
+                    CGDisplayPixelsWide(candidateID),
+                    CGDisplayPixelsHigh(candidateID),
+                    candidate.backingScaleFactor,
+                    candidateID == CGMainDisplayID() ? "true" : "false");
+        }
         fprintf(stderr,
                 "TB_RETINA_MOTION result=failed "
-                "reason=targetbridge-retina-target-absent requestedDisplay=%u\n",
+                "reason=appliance-retina-target-absent requestedDisplay=%u\n",
                 (unsigned int)self.requestedDisplayID);
         fflush(stderr);
         // This standalone diagnostic owns no stream, socket, or output file at

@@ -23,23 +23,45 @@ static int wait_for_completions(void *renderer, uint64_t target) {
     return 0;
 }
 
-static int wait_for_presentation_epoch(void *renderer, uint64_t target) {
+static int wait_for_presentation_callbacks(void *renderer,
+                                           uint64_t epoch,
+                                           uint64_t target) {
     const CFTimeInterval deadline = CACurrentMediaTime() + 3.0;
     struct tb_native_metal_stats stats;
     do {
         tb_native_metal_get_stats(renderer, &stats);
-        if (stats.last_presented_epoch >= target) return 1;
+        if (stats.presentation_epoch == epoch) {
+            const int state = tb_native_metal_presentation_resolution_state(
+                target,
+                stats.presentation_epoch_presented_frames,
+                stats.presentation_epoch_dropped_frames);
+            if (state == TB_NATIVE_METAL_PRESENTATION_DRAINED) return 1;
+            if (state == TB_NATIVE_METAL_PRESENTATION_INVARIANT) {
+                fprintf(stderr,
+                        "native Metal renderer test: presentation callback "
+                        "invariant epoch=%llu target=%llu presented=%llu "
+                        "dropped=%llu\n",
+                        (unsigned long long)epoch,
+                        (unsigned long long)target,
+                        (unsigned long long)
+                            stats.presentation_epoch_presented_frames,
+                        (unsigned long long)
+                            stats.presentation_epoch_dropped_frames);
+                return 0;
+            }
+        }
         [[NSRunLoop currentRunLoop]
             runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.005]];
     } while (CACurrentMediaTime() < deadline);
     fprintf(stderr,
-            "native Metal renderer test: presentation timeout "
-            "target=%llu current=%llu last=%llu presented=%llu "
+            "native Metal renderer test: presentation callback timeout "
+            "epoch=%llu target=%llu current=%llu presented=%llu dropped=%llu "
             "submitted=%llu completed=%llu\n",
+            (unsigned long long)epoch,
             (unsigned long long)target,
             (unsigned long long)stats.presentation_epoch,
-            (unsigned long long)stats.last_presented_epoch,
-            (unsigned long long)stats.presented_frames,
+            (unsigned long long)stats.presentation_epoch_presented_frames,
+            (unsigned long long)stats.presentation_epoch_dropped_frames,
             (unsigned long long)stats.submitted_frames,
             (unsigned long long)stats.completed_frames);
     return 0;
@@ -177,6 +199,116 @@ static int exercise_bounded_teardown_drain(void) {
     if (!ok) {
         fprintf(stderr,
                 "native Metal renderer test: bounded teardown drain failed\n");
+    }
+    return ok;
+}
+
+static int exercise_hardware_presentation_timeline(void) {
+    void *renderer = tb_native_metal_create();
+    if (!renderer) {
+        fprintf(stderr,
+                "native Metal renderer test: cadence renderer unavailable\n");
+        return 0;
+    }
+    const uint64_t oldEpoch =
+        tb_native_metal_test_begin_presentation_epoch(renderer);
+    const uint64_t currentEpoch =
+        tb_native_metal_test_begin_presentation_epoch(renderer);
+    tb_native_metal_test_record_presented_time(renderer, currentEpoch, 10.000);
+    tb_native_metal_test_record_presented_time(renderer, currentEpoch, 10.016);
+    tb_native_metal_test_record_presented_time(renderer, currentEpoch, 10.010);
+    /* Apple reports zero when a drawable was not presented. Invalid values
+     * must be drops, never fabricated presentation timestamps. */
+    tb_native_metal_test_record_presented_time(renderer, currentEpoch, 0.0);
+    tb_native_metal_test_record_presented_time(renderer, currentEpoch, NAN);
+    tb_native_metal_test_record_presented_time(renderer, currentEpoch, -1.0);
+    tb_native_metal_test_record_presented_time(renderer, currentEpoch, INFINITY);
+    /* A delayed callback from an earlier session must never contaminate the
+     * current epoch's cadence statistics. */
+    tb_native_metal_test_record_presented_time(renderer, oldEpoch, 10.032);
+    tb_native_metal_test_record_presented_time(renderer, oldEpoch, 0.0);
+
+    struct tb_native_metal_stats stats;
+    tb_native_metal_get_stats(renderer, &stats);
+    struct tb_native_metal_stats runtimeStats;
+    tb_native_metal_get_runtime_stats(renderer, &runtimeStats);
+    uint64_t presentationGapSamples = 0;
+    for (size_t index = 0;
+         index < TB_NATIVE_METAL_TIMING_BUCKETS;
+         index++) {
+        presentationGapSamples +=
+            stats.presentation_epoch_gap_histogram[index];
+    }
+    int ok = oldEpoch != 0 && currentEpoch == oldEpoch + 1 &&
+        stats.presentation_epoch == currentEpoch &&
+        stats.presentation_epoch_presented_frames == 3 &&
+        stats.presentation_epoch_dropped_frames == 4 &&
+        stats.presentation_dropped_frames == 5 &&
+        stats.presentation_epoch_out_of_order_callbacks == 1 &&
+        presentationGapSamples == 1 &&
+        fabs(stats.presentation_epoch_gap_ms_max - 16.0) < 0.000001 &&
+        fabs(stats.presentation_epoch_first_time - 10.000) < 0.000001 &&
+        fabs(stats.presentation_epoch_last_time - 10.016) < 0.000001 &&
+        runtimeStats.presentation_epoch == stats.presentation_epoch &&
+        runtimeStats.presented_frames == stats.presented_frames &&
+        runtimeStats.presentation_dropped_frames ==
+            stats.presentation_dropped_frames &&
+        runtimeStats.device_current_allocated_bytes == 0 &&
+        runtimeStats.device_recommended_working_set_bytes == 0;
+
+    const uint64_t droppedOnlyEpoch =
+        tb_native_metal_test_begin_presentation_epoch(renderer);
+    tb_native_metal_test_record_presented_time(renderer, droppedOnlyEpoch, 0.0);
+    struct tb_native_metal_stats droppedOnlyStats;
+    tb_native_metal_get_stats(renderer, &droppedOnlyStats);
+    ok = ok && droppedOnlyEpoch == currentEpoch + 1 &&
+        droppedOnlyStats.last_presented_epoch == currentEpoch &&
+        droppedOnlyStats.presentation_epoch_presented_frames == 0 &&
+        droppedOnlyStats.presentation_epoch_dropped_frames == 1 &&
+        droppedOnlyStats.presentation_epoch_first_time == 0.0 &&
+        droppedOnlyStats.presentation_epoch_last_time == 0.0;
+    tb_native_metal_destroy(renderer);
+    if (!ok) {
+        fprintf(stderr,
+                "native Metal renderer test: hardware timeline isolation/order failed\n");
+    }
+    return ok;
+}
+
+static int exercise_presentation_resolution_state(void) {
+    const int ok =
+        tb_native_metal_presentation_resolution_state(0, 0, 0) ==
+            TB_NATIVE_METAL_PRESENTATION_DRAINED &&
+        tb_native_metal_presentation_resolution_state(3, 2, 1) ==
+            TB_NATIVE_METAL_PRESENTATION_DRAINED &&
+        tb_native_metal_presentation_resolution_state(3, 2, 0) ==
+            TB_NATIVE_METAL_PRESENTATION_PENDING &&
+        tb_native_metal_presentation_resolution_state(3, 3, 1) ==
+            TB_NATIVE_METAL_PRESENTATION_INVARIANT &&
+        tb_native_metal_presentation_resolution_state(
+            UINT64_MAX, UINT64_MAX - 1, 1) ==
+            TB_NATIVE_METAL_PRESENTATION_DRAINED &&
+        tb_native_metal_presentation_resolution_state(
+            UINT64_MAX, UINT64_MAX, 1) ==
+            TB_NATIVE_METAL_PRESENTATION_INVARIANT;
+    if (!ok) {
+        fprintf(stderr,
+                "native Metal renderer test: presentation resolution state failed\n");
+    }
+    return ok;
+}
+
+static int exercise_display_sync_policy(void) {
+    const int ok =
+        tb_native_metal_test_display_sync_enabled_for_value(NULL) == 1 &&
+        tb_native_metal_test_display_sync_enabled_for_value("") == 1 &&
+        tb_native_metal_test_display_sync_enabled_for_value("1") == 1 &&
+        tb_native_metal_test_display_sync_enabled_for_value("false") == 1 &&
+        tb_native_metal_test_display_sync_enabled_for_value("00") == 1 &&
+        tb_native_metal_test_display_sync_enabled_for_value("0") == 0;
+    if (!ok) {
+        fprintf(stderr,
+                "native Metal renderer test: display-sync policy failed\n");
     }
     return ok;
 }
@@ -363,7 +495,10 @@ static int exercise_raw_staging(void *renderer) {
                  renderer,
                  baseline.completed_frames +
                      (uint64_t)presentationSubmissions) &&
-             wait_for_presentation_epoch(renderer, presentationEpoch);
+             wait_for_presentation_callbacks(
+                 renderer,
+                 presentationEpoch,
+                 (uint64_t)presentationSubmissions);
         if (!ok) {
             fprintf(stderr,
                     "native Metal renderer test: covered first frames failed "
@@ -377,27 +512,51 @@ static int exercise_raw_staging(void *renderer) {
     struct tb_native_metal_stats afterFirst;
     tb_native_metal_get_stats(renderer, &afterFirst);
     if (ok) {
+        const uint64_t epochPresented =
+            afterFirst.presentation_epoch_presented_frames;
+        const uint64_t epochDropped =
+            afterFirst.presentation_epoch_dropped_frames;
+        const int presentationStateValid = epochPresented > 0
+            ? afterFirst.last_presented_epoch == presentationEpoch &&
+                afterFirst.presentation_epoch_first_time > 0.0 &&
+                afterFirst.presentation_epoch_last_time >=
+                    afterFirst.presentation_epoch_first_time
+            : epochDropped == (uint64_t)presentationSubmissions &&
+                afterFirst.last_presented_epoch < presentationEpoch &&
+                afterFirst.presentation_epoch_first_time == 0.0 &&
+                afterFirst.presentation_epoch_last_time == 0.0;
         ok = afterFirst.raw_copy_samples ==
                  baseline.raw_copy_samples +
                      (uint64_t)presentationSubmissions &&
              afterFirst.submitted_frames ==
                  baseline.submitted_frames +
                      (uint64_t)presentationSubmissions &&
-             afterFirst.presented_frames >= baseline.presented_frames + 1 &&
-             afterFirst.last_presented_epoch == presentationEpoch;
+             epochPresented + epochDropped ==
+                 (uint64_t)presentationSubmissions &&
+             afterFirst.presentation_dropped_frames -
+                     baseline.presentation_dropped_frames == epochDropped &&
+             presentationStateValid;
         if (!ok) {
             fprintf(stderr,
                     "native Metal renderer test: presented accounting mismatch "
                     "raw=%llu/%llu submitted=%llu/%llu presented=%llu/%llu "
-                    "last=%llu epoch=%llu\n",
+                    "presentationDrops=%llu/%llu last=%llu epoch=%llu "
+                    "epochPresented=%llu epochDropped=%llu "
+                    "first=%.6f lastTime=%.6f\n",
                     (unsigned long long)afterFirst.raw_copy_samples,
                     (unsigned long long)baseline.raw_copy_samples,
                     (unsigned long long)afterFirst.submitted_frames,
                     (unsigned long long)baseline.submitted_frames,
                     (unsigned long long)afterFirst.presented_frames,
                     (unsigned long long)baseline.presented_frames,
+                    (unsigned long long)afterFirst.presentation_dropped_frames,
+                    (unsigned long long)baseline.presentation_dropped_frames,
                     (unsigned long long)afterFirst.last_presented_epoch,
-                    (unsigned long long)presentationEpoch);
+                    (unsigned long long)presentationEpoch,
+                    (unsigned long long)epochPresented,
+                    (unsigned long long)epochDropped,
+                    afterFirst.presentation_epoch_first_time,
+                    afterFirst.presentation_epoch_last_time);
         }
     }
 
@@ -500,6 +659,9 @@ int main(void) {
                 TB_NATIVE_METAL_TEST_COMPLETION_NV12)) return 1;
         if (!exercise_terminal_completion_failure(
                 TB_NATIVE_METAL_TEST_COMPLETION_DPCM)) return 1;
+        if (!exercise_hardware_presentation_timeline()) return 1;
+        if (!exercise_presentation_resolution_state()) return 1;
+        if (!exercise_display_sync_policy()) return 1;
 
         void *renderer = tb_native_metal_create();
         if (!renderer) {

@@ -1,11 +1,16 @@
 #import "raw_nv12.h"
+#import "tb_appliance_surface_policy.h"
+#import "tb_console_session_lock.h"
+#import "tb_cursor_shield_view.h"
 #import "tb_dpcm.h"
+#import "tb_display_lifecycle.h"
 #import "tb_native_metal_renderer.h"
 #import "tb_power_lifecycle.h"
 #import "tb_pre_session.h"
 #import "tb_shutdown_gate.h"
 
 #import <AppKit/AppKit.h>
+#import <CoreGraphics/CGSession.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
 #import <os/log.h>
@@ -19,6 +24,7 @@
 #include <net/if.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -26,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -36,9 +43,67 @@ enum {
     TB_PACKET_VIDEO_FRAME = 0x21,
     TB_PACKET_RAW_FRAME = 0x22,
     TB_PACKET_DPCM_FRAME = 0x25,
+    TB_PACKET_RECEIVER_SURFACE_STATE = 0x39,
+    TB_PACKET_SOURCE_DISPLAY_STATE = 0x3A,
     TB_MAX_PACKET_LENGTH = TB_PRE_SESSION_MAX_PACKET_LENGTH,
     TB_SERVE_PEER_IDLE_TIMEOUT_SECONDS = 15
 };
+
+struct tb_receiver_lifecycle_snapshot {
+    pthread_mutex_t lock;
+    bool receiver_surface_available;
+    bool source_awake;
+    bool frames_allowed;
+    bool power_gate_failed;
+    uint64_t receiver_epoch;
+    uint64_t presentation_generation;
+};
+
+static void tb_receiver_lifecycle_snapshot_store(
+    struct tb_receiver_lifecycle_snapshot *snapshot,
+    bool receiver_surface_available,
+    uint64_t receiver_epoch,
+    bool source_awake,
+    bool frames_allowed,
+    uint64_t presentation_generation) {
+    pthread_mutex_lock(&snapshot->lock);
+    snapshot->receiver_surface_available = receiver_surface_available;
+    snapshot->receiver_epoch = receiver_epoch;
+    snapshot->source_awake = source_awake;
+    snapshot->frames_allowed = frames_allowed;
+    snapshot->presentation_generation = presentation_generation;
+    pthread_mutex_unlock(&snapshot->lock);
+}
+
+static void tb_receiver_lifecycle_snapshot_load(
+    struct tb_receiver_lifecycle_snapshot *snapshot,
+    bool *receiver_surface_available,
+    uint64_t *receiver_epoch,
+    bool *source_awake,
+    bool *frames_allowed,
+    uint64_t *presentation_generation,
+    bool *power_gate_failed) {
+    pthread_mutex_lock(&snapshot->lock);
+    if (receiver_surface_available) {
+        *receiver_surface_available = snapshot->receiver_surface_available;
+    }
+    if (receiver_epoch) *receiver_epoch = snapshot->receiver_epoch;
+    if (source_awake) *source_awake = snapshot->source_awake;
+    if (frames_allowed) *frames_allowed = snapshot->frames_allowed;
+    if (presentation_generation) {
+        *presentation_generation = snapshot->presentation_generation;
+    }
+    if (power_gate_failed) *power_gate_failed = snapshot->power_gate_failed;
+    pthread_mutex_unlock(&snapshot->lock);
+}
+
+static void tb_receiver_lifecycle_snapshot_set_power_failure(
+    struct tb_receiver_lifecycle_snapshot *snapshot,
+    bool failed) {
+    pthread_mutex_lock(&snapshot->lock);
+    snapshot->power_gate_failed = failed;
+    pthread_mutex_unlock(&snapshot->lock);
+}
 
 static os_log_t receiver_log(void) {
     static os_log_t log;
@@ -61,6 +126,85 @@ static void receiver_diagnostic(os_log_type_t type,
     vsnprintf(message, sizeof(message), format, arguments);
     va_end(arguments);
     os_log_with_type(receiver_log(), type, "%{public}s", message);
+}
+
+/* CGDisplayHideCursor/ShowCursor maintain one process-global count; Apple's
+ * display argument is retained for API compatibility but is not a scope. Do
+ * not clear our balance flag until Core Graphics confirms the matching Show.
+ */
+static bool restore_global_cursor(CGDirectDisplayID displayID,
+                                  bool *cursorHidden,
+                                  const char *phase) {
+    if (!cursorHidden || !*cursorHidden) return true;
+    CGError lastError = kCGErrorFailure;
+    for (unsigned int attempt = 1; attempt <= 2; attempt++) {
+        lastError = CGDisplayShowCursor(displayID);
+        if (lastError == kCGErrorSuccess) {
+            *cursorHidden = false;
+            receiver_diagnostic(
+                OS_LOG_TYPE_DEFAULT,
+                "%s globalCursor=restored apiDisplay=%u attempt=%u",
+                phase,
+                (unsigned int)displayID,
+                attempt);
+            return true;
+        }
+    }
+    receiver_diagnostic(
+        OS_LOG_TYPE_ERROR,
+        "%s globalCursor=restore-failed apiDisplay=%u error=%d attempts=2",
+        phase,
+        (unsigned int)displayID,
+        (int)lastError);
+    return false;
+}
+
+/* Apple documents that CGDisplayHideCursor normally affects the system cursor
+ * only when the caller is foreground. App activation is asynchronous, so a
+ * success result before applicationDidBecomeActive is not sufficient. This
+ * helper is called from foreground/key/wake callbacks and keeps one balanced
+ * Core Graphics hide owned by the active display session. */
+static bool ensure_global_cursor_hidden(CGDirectDisplayID displayID,
+                                        bool *cursorHidden,
+                                        const char *phase) {
+    if (!cursorHidden || !NSApp.isActive) {
+        receiver_diagnostic(
+            OS_LOG_TYPE_DEFAULT,
+            "%s globalCursor=hide-deferred appActive=%s",
+            phase,
+            NSApp.isActive ? "true" : "false");
+        return false;
+    }
+
+    if (*cursorHidden) {
+        const CGError showResult = CGDisplayShowCursor(displayID);
+        if (showResult != kCGErrorSuccess) {
+            receiver_diagnostic(
+                OS_LOG_TYPE_ERROR,
+                "%s globalCursor=reassert-show-failed error=%d",
+                phase,
+                (int)showResult);
+            return false;
+        }
+        *cursorHidden = false;
+    }
+
+    const CGError hideResult = CGDisplayHideCursor(displayID);
+    if (hideResult != kCGErrorSuccess) {
+        receiver_diagnostic(
+            OS_LOG_TYPE_ERROR,
+            "%s globalCursor=hide-failed error=%d",
+            phase,
+            (int)hideResult);
+        return false;
+    }
+    *cursorHidden = true;
+    receiver_diagnostic(
+        OS_LOG_TYPE_DEFAULT,
+        "%s globalCursor=hidden appActive=true apiDisplay=%u",
+        phase,
+        (unsigned int)displayID);
+    return true;
 }
 
 static dispatch_source_t termination_signal_source(
@@ -111,55 +255,547 @@ static dispatch_source_t termination_signal_source(
 - (BOOL)canBecomeMainWindow { return YES; }
 @end
 
+static BOOL current_startup_gui_session_available(void) {
+    CFDictionaryRef session = CGSessionCopyCurrentDictionary();
+    if (!session) return NO;
+    CFTypeRef onConsole = CFDictionaryGetValue(
+        session, kCGSessionOnConsoleKey);
+    CFTypeRef loginDone = CFDictionaryGetValue(
+        session, kCGSessionLoginDoneKey);
+    const BOOL available =
+        onConsole && CFGetTypeID(onConsole) == CFBooleanGetTypeID() &&
+        CFBooleanGetValue((CFBooleanRef)onConsole) &&
+        loginDone && CFGetTypeID(loginDone) == CFBooleanGetTypeID() &&
+        CFBooleanGetValue((CFBooleanRef)loginDone);
+    CFRelease(session);
+    if (!available) return NO;
+
+    /* NSWorkspace supplies the dynamic authority. This read-only startup
+     * snapshot closes its one blind spot: launchd can restart the receiver
+     * after the session-resigned callback has already happened. The optional
+     * IOConsoleUsers lock field is absent while unlocked on the tested iMac.
+     * Missing or malformed startup evidence fails closed; once running, the
+     * documented NSWorkspace notifications are the dynamic authority. */
+    return tb_current_console_session_lock_state() ==
+        TB_CONSOLE_SESSION_UNLOCKED;
+}
+
 @interface TBReceiverPresentationController : NSObject <NSApplicationDelegate>
 - (instancetype)initWithWindow:(NSWindow *)window;
+@property(nonatomic, getter=isStreamActive) BOOL streamActive;
+@property(nonatomic, copy, nullable) dispatch_block_t cursorActivationHandler;
+@property(nonatomic, copy, nullable) dispatch_block_t cursorDeactivationHandler;
+@property(nonatomic, copy, nullable) dispatch_block_t privacyBlankHandler;
+@property(nonatomic, copy, nullable) dispatch_block_t privacyResumeHandler;
+@property(nonatomic, copy, nullable) BOOL (^displayPowerGateHandler)(BOOL active);
+@property(nonatomic, copy, nullable) void (^lifecycleStateHandler)(
+    BOOL receiverSurfaceAvailable,
+    uint64_t receiverEpoch,
+    BOOL sourceAwake,
+    BOOL framesAllowed,
+    uint64_t presentationGeneration);
+- (void)requestCursorActivation;
+- (enum tb_display_lifecycle_update)applySourceDisplayAwake:(BOOL)awake
+                                                     epoch:(uint64_t)epoch
+                                             receiverEpoch:(uint64_t)receiverEpoch;
+- (BOOL)markFreshFramePresentedForGeneration:(uint64_t)generation;
+- (BOOL)admitLegacyFrameForGeneration:(uint64_t *)generation;
+- (void)refreshLifecycleState;
+- (void)scheduleStartupSessionRevalidation;
+- (void)performStartupSessionRevalidation:(NSUInteger)retryGeneration
+                                  remaining:(NSUInteger)remaining;
 - (void)invalidate;
 @end
 
 @implementation TBReceiverPresentationController {
     NSWindow *_window;
     id _screensDidWakeObserver;
+    id _sessionDidBecomeActiveObserver;
+    id _sessionDidResignActiveObserver;
+    id _windowDidBecomeKeyObserver;
+    id _windowDidResignKeyObserver;
+    NSUInteger _activationRequestGeneration;
+    NSUInteger _sessionTransitionGeneration;
+    NSUInteger _startupSnapshotRetryGeneration;
+    BOOL _guiSessionActive;
+    BOOL _appForeground;
+    BOOL _displayPowerActive;
+    BOOL _lastReportedSurfaceAvailable;
+    uint64_t _reportedSurfaceEpoch;
+    struct tb_display_lifecycle _displayLifecycle;
 }
 
 - (instancetype)initWithWindow:(NSWindow *)window {
     self = [super init];
     if (!self) return nil;
     _window = window;
+    /* Seed from the public CG session dictionary plus the optional read-only
+     * console-lock snapshot so launch into an already active Aqua session
+     * does not wait for a transition notification. Dynamic authority comes
+     * from the public NSWorkspace/AppKit callbacks below. */
+    _guiSessionActive = current_startup_gui_session_available();
+    _appForeground = NSApp.isActive;
+    tb_display_lifecycle_init(&_displayLifecycle, 0);
+    _reportedSurfaceEpoch = 1;
     __weak TBReceiverPresentationController *weakSelf = self;
     _screensDidWakeObserver = [NSWorkspace.sharedWorkspace.notificationCenter
-        addObserverForName:NSWorkspaceScreensDidWakeNotification
+                addObserverForName:NSWorkspaceScreensDidWakeNotification
                     object:nil
                      queue:NSOperationQueue.mainQueue
                 usingBlock:^(__unused NSNotification *notification) {
-        [weakSelf presentWithoutActivation];
+        TBReceiverPresentationController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (!strongSelf->_guiSessionActive) {
+            [strongSelf scheduleStartupSessionRevalidation];
+            return;
+        }
+        [strongSelf presentWithoutActivation];
+        if (strongSelf.streamActive) {
+            [strongSelf requestCursorActivation];
+        }
+        [strongSelf refreshLifecycleState];
+    }];
+    _sessionDidBecomeActiveObserver =
+        [NSWorkspace.sharedWorkspace.notificationCenter
+            addObserverForName:NSWorkspaceSessionDidBecomeActiveNotification
+                        object:nil
+                         queue:NSOperationQueue.mainQueue
+                    usingBlock:^(__unused NSNotification *notification) {
+        TBReceiverPresentationController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf->_sessionTransitionGeneration += 1;
+        strongSelf->_guiSessionActive = YES;
+        receiver_diagnostic(
+            OS_LOG_TYPE_DEFAULT,
+            "gui-session=active stream=%s action=reclaim-surface",
+            strongSelf.streamActive ? "true" : "false");
+        [strongSelf presentWithoutActivation];
+        [strongSelf refreshLifecycleState];
+        if (strongSelf.streamActive) [strongSelf requestCursorActivation];
+    }];
+    _sessionDidResignActiveObserver =
+        [NSWorkspace.sharedWorkspace.notificationCenter
+            addObserverForName:NSWorkspaceSessionDidResignActiveNotification
+                        object:nil
+                         queue:NSOperationQueue.mainQueue
+                    usingBlock:^(__unused NSNotification *notification) {
+        TBReceiverPresentationController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf->_sessionTransitionGeneration += 1;
+        strongSelf->_guiSessionActive = NO;
+        strongSelf->_activationRequestGeneration += 1;
+        [strongSelf refreshLifecycleState];
+        receiver_diagnostic(
+            OS_LOG_TYPE_DEFAULT,
+            "gui-session=inactive stream=%s "
+            "action=blank-surface-and-release-cursor",
+            strongSelf.streamActive ? "true" : "false");
+    }];
+    _windowDidBecomeKeyObserver = [NSNotificationCenter.defaultCenter
+        addObserverForName:NSWindowDidBecomeKeyNotification
+                    object:_window
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(__unused NSNotification *notification) {
+        TBReceiverPresentationController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf reapplyCursorShield];
+        [strongSelf refreshLifecycleState];
+    }];
+    _windowDidResignKeyObserver = [NSNotificationCenter.defaultCenter
+        addObserverForName:NSWindowDidResignKeyNotification
+                    object:_window
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(__unused NSNotification *notification) {
+        TBReceiverPresentationController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf->_activationRequestGeneration += 1;
+        [strongSelf refreshLifecycleState];
+        receiver_diagnostic(
+            OS_LOG_TYPE_DEFAULT,
+            "window=non-key stream=%s cursor=released surface=blank",
+            strongSelf.streamActive ? "true" : "false");
+        /* Do not make a window key reentrantly from its resign-key callback.
+         * During app or secure-session deactivation NSApp can still report
+         * active for this callback's turn. The generation check lets the
+         * corresponding resign/session notification cancel this request;
+         * ordinary same-app key loss is reclaimed on a later main-queue turn. */
+        if (strongSelf.streamActive && strongSelf->_guiSessionActive &&
+            NSApp.isActive) {
+            const NSUInteger generation =
+                strongSelf->_activationRequestGeneration;
+            dispatch_after(
+                dispatch_time(
+                    DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
+                dispatch_get_main_queue(), ^{
+                TBReceiverPresentationController *laterSelf = weakSelf;
+                if (!laterSelf || !laterSelf.streamActive ||
+                    !laterSelf->_guiSessionActive ||
+                    laterSelf->_activationRequestGeneration != generation ||
+                    !NSApp.isActive || laterSelf->_window.isKeyWindow) {
+                    return;
+                }
+                receiver_diagnostic(
+                    OS_LOG_TYPE_DEFAULT,
+                    "window=non-key action=reclaim-deferred");
+                [laterSelf requestCursorActivation];
+            });
+        }
     }];
     return self;
+}
+
+- (void)setStreamActive:(BOOL)streamActive {
+    NSAssert(NSThread.isMainThread,
+             @"stream state must be changed on the main thread");
+    if (_streamActive == streamActive) {
+        [self refreshLifecycleState];
+        return;
+    }
+    _streamActive = streamActive;
+    if (streamActive) {
+        tb_display_lifecycle_begin_stream(&_displayLifecycle);
+    } else {
+        tb_display_lifecycle_end_stream(&_displayLifecycle);
+    }
+    if (streamActive && _guiSessionActive) {
+        [self presentWithoutActivation];
+        [self requestCursorActivation];
+    } else {
+        _activationRequestGeneration += 1;
+        if (streamActive) [self scheduleStartupSessionRevalidation];
+    }
+    [self refreshLifecycleState];
+}
+
+- (void)requestCursorActivation {
+    if (!self.streamActive || !_guiSessionActive ||
+        !_displayLifecycle.source_awake) return;
+    [_window makeKeyAndOrderFront:nil];
+    [self refreshLifecycleState];
+    const struct tb_appliance_surface_policy policy =
+        tb_appliance_surface_policy_evaluate(
+            self.streamActive, _guiSessionActive,
+            _appForeground, _window.isKeyWindow);
+    if (policy.suppress_local_cursor &&
+        tb_display_lifecycle_may_hide_cursor(&_displayLifecycle) &&
+        _displayPowerActive) {
+        if (self.cursorActivationHandler) self.cursorActivationHandler();
+        return;
+    }
+    if (!policy.request_activation) return;
+
+    const NSUInteger generation = ++_activationRequestGeneration;
+    if (_guiSessionActive) {
+        [NSApp activateIgnoringOtherApps:YES];
+    } else {
+        receiver_diagnostic(
+            OS_LOG_TYPE_DEFAULT,
+            "appkit=activation-deferred reason=gui-session-unavailable");
+    }
+    __weak TBReceiverPresentationController *weakSelf = self;
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC),
+        dispatch_get_main_queue(), ^{
+        TBReceiverPresentationController *strongSelf = weakSelf;
+        if (!strongSelf || !strongSelf.streamActive ||
+            !strongSelf->_guiSessionActive ||
+            strongSelf->_activationRequestGeneration != generation ||
+            NSApp.isActive) {
+            return;
+        }
+        receiver_diagnostic(
+            OS_LOG_TYPE_ERROR,
+            "session=active globalCursor=hide-abandoned "
+            "reason=foreground-activation-timeout handler=%s",
+            strongSelf.cursorActivationHandler ? "true" : "false");
+    });
+}
+
+- (void)refreshLifecycleState {
+    NSAssert(NSThread.isMainThread,
+             @"display lifecycle must be evaluated on the main thread");
+    const BOOL publicSurfaceAvailable =
+        _guiSessionActive && _appForeground && _window.isKeyWindow;
+    const BOOL wantsPower = self.streamActive &&
+        _displayLifecycle.source_awake && publicSurfaceAvailable;
+    if (wantsPower != _displayPowerActive) {
+        const BOOL transitionSucceeded = self.displayPowerGateHandler
+            ? self.displayPowerGateHandler(wantsPower)
+            : !wantsPower;
+        _displayPowerActive = wantsPower && transitionSucceeded;
+    }
+
+    const BOOL reportedSurfaceAvailable =
+        publicSurfaceAvailable &&
+        (!self.streamActive || !_displayLifecycle.source_awake ||
+         _displayPowerActive);
+    if (reportedSurfaceAvailable != _lastReportedSurfaceAvailable) {
+        _lastReportedSurfaceAvailable = reportedSurfaceAvailable;
+        _reportedSurfaceEpoch++;
+        if (_reportedSurfaceEpoch == 0) _reportedSurfaceEpoch = 1;
+    }
+    (void)tb_display_lifecycle_publish_receiver_surface(
+        &_displayLifecycle,
+        reportedSurfaceAvailable,
+        _reportedSurfaceEpoch);
+    if (self.lifecycleStateHandler) {
+        self.lifecycleStateHandler(
+            reportedSurfaceAvailable,
+            _reportedSurfaceEpoch,
+            _displayLifecycle.source_awake,
+            tb_display_lifecycle_accepts_frames(&_displayLifecycle),
+            _displayLifecycle.presentation_generation);
+    }
+
+    const struct tb_appliance_surface_policy appPolicy =
+        tb_appliance_surface_policy_evaluate(
+            self.streamActive,
+            _guiSessionActive,
+            _appForeground,
+            _window.isKeyWindow);
+    const BOOL exposeLivePixels = self.streamActive &&
+        !appPolicy.privacy_blank && _displayPowerActive &&
+        tb_display_lifecycle_may_expose_pixels(&_displayLifecycle);
+    const BOOL exposeIdleSurface = !self.streamActive &&
+        publicSurfaceAvailable;
+    if (exposeLivePixels || exposeIdleSurface) {
+        if (self.privacyResumeHandler) self.privacyResumeHandler();
+    } else {
+        if (self.privacyBlankHandler) self.privacyBlankHandler();
+    }
+
+    if (exposeLivePixels && appPolicy.suppress_local_cursor &&
+        tb_display_lifecycle_may_hide_cursor(&_displayLifecycle)) {
+        if (self.cursorActivationHandler) self.cursorActivationHandler();
+    } else if (self.cursorDeactivationHandler) {
+        self.cursorDeactivationHandler();
+    }
+}
+
+- (void)scheduleStartupSessionRevalidation {
+    if (_guiSessionActive || _sessionTransitionGeneration != 0) return;
+    const NSUInteger retryGeneration = ++_startupSnapshotRetryGeneration;
+    [self performStartupSessionRevalidation:retryGeneration remaining:20];
+}
+
+- (void)performStartupSessionRevalidation:(NSUInteger)retryGeneration
+                                  remaining:(NSUInteger)remaining {
+    __weak TBReceiverPresentationController *weakSelf = self;
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
+        dispatch_get_main_queue(), ^{
+        TBReceiverPresentationController *strongSelf = weakSelf;
+        if (!strongSelf ||
+            strongSelf->_startupSnapshotRetryGeneration != retryGeneration ||
+            strongSelf->_sessionTransitionGeneration != 0 ||
+            strongSelf->_guiSessionActive) {
+            return;
+        }
+        if (current_startup_gui_session_available()) {
+            strongSelf->_guiSessionActive = YES;
+            receiver_diagnostic(
+                OS_LOG_TYPE_DEFAULT,
+                "gui-session=startup-snapshot-recovered "
+                "action=reclaim-surface");
+            [strongSelf presentWithoutActivation];
+            [NSApp activateIgnoringOtherApps:YES];
+            if (NSApp.isActive) {
+                strongSelf->_appForeground = YES;
+                [strongSelf->_window makeKeyAndOrderFront:nil];
+            }
+            [strongSelf refreshLifecycleState];
+            if (strongSelf.streamActive) {
+                [strongSelf requestCursorActivation];
+            }
+            return;
+        }
+        if (remaining > 1) {
+            [strongSelf performStartupSessionRevalidation:retryGeneration
+                                                 remaining:remaining - 1];
+        }
+    });
+    /* Twenty attempts are bounded to five seconds. A later wake or connect
+     * starts a fresh bounded generation without polling while stably locked. */
+}
+
+- (enum tb_display_lifecycle_update)applySourceDisplayAwake:(BOOL)awake
+                                                     epoch:(uint64_t)epoch
+                                             receiverEpoch:(uint64_t)receiverEpoch {
+    NSAssert(NSThread.isMainThread,
+             @"source lifecycle must be applied on the main thread");
+    const enum tb_display_lifecycle_update update =
+        tb_display_lifecycle_apply_source(
+            &_displayLifecycle, awake, epoch);
+    const enum tb_display_lifecycle_update receiverAck =
+        tb_display_lifecycle_ack_receiver_epoch(
+            &_displayLifecycle, receiverEpoch);
+    if (update == TB_DISPLAY_LIFECYCLE_APPLIED ||
+        receiverAck == TB_DISPLAY_LIFECYCLE_APPLIED) {
+        [self refreshLifecycleState];
+        if (awake && self.streamActive && _guiSessionActive) {
+            [self presentWithoutActivation];
+            [self requestCursorActivation];
+        }
+    }
+    return update;
+}
+
+- (BOOL)markFreshFramePresentedForGeneration:(uint64_t)generation {
+    NSAssert(NSThread.isMainThread,
+             @"fresh-frame lifecycle must be applied on the main thread");
+    if (tb_display_lifecycle_note_presented_frame(
+            &_displayLifecycle, generation)) {
+        [self refreshLifecycleState];
+        return YES;
+    }
+    return NO;
+}
+
+- (BOOL)admitLegacyFrameForGeneration:(uint64_t *)generation {
+    NSAssert(NSThread.isMainThread,
+             @"legacy frame admission must be checked on the main thread");
+    if (!tb_display_lifecycle_assume_legacy_peer(&_displayLifecycle)) {
+        return NO;
+    }
+    [self refreshLifecycleState];
+    if (generation) {
+        *generation = _displayLifecycle.presentation_generation;
+    }
+    return tb_display_lifecycle_accepts_frames(&_displayLifecycle);
+}
+
+- (void)reapplyCursorShield {
+    if (![_window.contentView isKindOfClass:TBCursorShieldView.class]) return;
+    TBCursorShieldView *surface =
+        (TBCursorShieldView *)_window.contentView;
+    [_window invalidateCursorRectsForView:surface];
+    [surface reapplyCursorPolicy];
 }
 
 - (void)presentWithoutActivation {
     [_window orderFrontRegardless];
     [_window displayIfNeeded];
     [_window.contentView displayIfNeeded];
+    [self reapplyCursorShield];
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
-    [self presentWithoutActivation];
+    const BOOL regularPolicySet =
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    receiver_diagnostic(
+        NSApp.activationPolicy == NSApplicationActivationPolicyRegular
+            ? OS_LOG_TYPE_DEFAULT
+            : OS_LOG_TYPE_ERROR,
+        "appkit=did-finish-launching requestedPolicy=regular "
+        "accepted=%s effectivePolicy=%ld",
+        regularPolicySet ? "true" : "false",
+        (long)NSApp.activationPolicy);
+    if (NSApp.activationPolicy != NSApplicationActivationPolicyRegular) {
+        receiver_diagnostic(
+            OS_LOG_TYPE_FAULT,
+            "appkit=launch-contract-failed expectedPolicy=regular "
+            "effectivePolicy=%ld admission=closed",
+            (long)NSApp.activationPolicy);
+        (void)kill(getpid(), SIGTERM);
+        return;
+    }
     /* Activation is asynchronous. Make the window key only from the matching
      * delegate callback instead of racing AppKit during launch-agent startup. */
-    [NSApp activateIgnoringOtherApps:YES];
+    if (_sessionTransitionGeneration == 0) {
+        _guiSessionActive = current_startup_gui_session_available();
+    }
+    if (_guiSessionActive) {
+        [NSApp activateIgnoringOtherApps:YES];
+    } else {
+        receiver_diagnostic(
+            OS_LOG_TYPE_DEFAULT,
+            "appkit=activation-deferred reason=gui-session-unavailable");
+        [self scheduleStartupSessionRevalidation];
+    }
 }
 
 - (void)applicationDidBecomeActive:(NSNotification *)notification {
     (void)notification;
-    [_window makeKeyWindow];
+    if (_sessionTransitionGeneration == 0) {
+        _guiSessionActive = current_startup_gui_session_available();
+    }
+    if (!_guiSessionActive) {
+        _appForeground = NO;
+        [self refreshLifecycleState];
+        receiver_diagnostic(
+            OS_LOG_TYPE_DEFAULT,
+            "appkit=became-active surface=withheld reason=locked-snapshot");
+        [self scheduleStartupSessionRevalidation];
+        return;
+    }
+    _appForeground = YES;
+    [self presentWithoutActivation];
+    [_window makeKeyAndOrderFront:nil];
+    _activationRequestGeneration += 1;
+    [self reapplyCursorShield];
+    [self refreshLifecycleState];
+}
+
+- (void)applicationWillResignActive:(NSNotification *)notification {
+    (void)notification;
+    _appForeground = NO;
+    _activationRequestGeneration += 1;
+    [self refreshLifecycleState];
+    receiver_diagnostic(
+        OS_LOG_TYPE_DEFAULT,
+        "appkit=will-resign-active stream=%s cursor=released surface=blank",
+        self.streamActive ? "true" : "false");
+    if (self.streamActive && _guiSessionActive) {
+        const NSUInteger generation = _activationRequestGeneration;
+        __weak TBReceiverPresentationController *weakSelf = self;
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
+            dispatch_get_main_queue(), ^{
+            TBReceiverPresentationController *strongSelf = weakSelf;
+            if (!strongSelf || !strongSelf.streamActive ||
+                !strongSelf->_guiSessionActive ||
+                strongSelf->_activationRequestGeneration != generation ||
+                NSApp.isActive) {
+                return;
+            }
+            [strongSelf requestCursorActivation];
+        });
+    }
 }
 
 - (void)invalidate {
+    self.streamActive = NO;
+    self.cursorActivationHandler = nil;
+    self.cursorDeactivationHandler = nil;
+    self.privacyBlankHandler = nil;
+    self.privacyResumeHandler = nil;
+    self.displayPowerGateHandler = nil;
+    self.lifecycleStateHandler = nil;
     if (_screensDidWakeObserver) {
         [NSWorkspace.sharedWorkspace.notificationCenter
             removeObserver:_screensDidWakeObserver];
         _screensDidWakeObserver = nil;
+    }
+    if (_sessionDidBecomeActiveObserver) {
+        [NSWorkspace.sharedWorkspace.notificationCenter
+            removeObserver:_sessionDidBecomeActiveObserver];
+        _sessionDidBecomeActiveObserver = nil;
+    }
+    if (_sessionDidResignActiveObserver) {
+        [NSWorkspace.sharedWorkspace.notificationCenter
+            removeObserver:_sessionDidResignActiveObserver];
+        _sessionDidResignActiveObserver = nil;
+    }
+    if (_windowDidBecomeKeyObserver) {
+        [NSNotificationCenter.defaultCenter
+            removeObserver:_windowDidBecomeKeyObserver];
+        _windowDidBecomeKeyObserver = nil;
+    }
+    if (_windowDidResignKeyObserver) {
+        [NSNotificationCenter.defaultCenter
+            removeObserver:_windowDidResignKeyObserver];
+        _windowDidResignKeyObserver = nil;
     }
 }
 
@@ -193,11 +829,87 @@ static bool read_exact(int fd, void *buffer, size_t length) {
             if (errno == EINTR) continue;
             return false;
         }
-        if (received == 0) return false;
+        if (received == 0) {
+            // A prior interrupted recv may have left EINTR in errno. Callers
+            // use errno==0 to distinguish an orderly EOF from a socket error.
+            errno = 0;
+            return false;
+        }
         cursor += (size_t)received;
         length -= (size_t)received;
     }
     return true;
+}
+
+enum tb_wire_packet_read_result {
+    TB_WIRE_PACKET_READ_OK = 0,
+    TB_WIRE_PACKET_READ_LENGTH_FAILED,
+    TB_WIRE_PACKET_READ_INVALID_LENGTH,
+    TB_WIRE_PACKET_READ_TYPE_FAILED,
+    TB_WIRE_PACKET_READ_PAYLOAD_FAILED
+};
+
+struct tb_wire_packet {
+    enum tb_wire_packet_read_result result;
+    uint32_t packet_length;
+    uint8_t packet_type;
+    size_t payload_length;
+    int error_number;
+    double payload_started;
+    double completed;
+};
+
+/* Read one complete framed packet into caller-owned storage. Keeping the
+ * framing state in a value object lets the optional second receive slot run on
+ * a dedicated serial queue while the transport worker submits the preceding
+ * immutable slot to Metal. The caller must not reuse `payload` until this
+ * function has returned. */
+static struct tb_wire_packet read_wire_packet(int fd, uint8_t *payload) {
+    struct tb_wire_packet packet;
+    memset(&packet, 0, sizeof(packet));
+
+    uint8_t lengthBytes[4];
+    errno = 0;
+    if (!read_exact(fd, lengthBytes, sizeof(lengthBytes))) {
+        packet.result = TB_WIRE_PACKET_READ_LENGTH_FAILED;
+        packet.error_number = errno;
+        return packet;
+    }
+
+    packet.packet_length = load_be32(lengthBytes);
+    if (packet.packet_length < 1 ||
+        packet.packet_length > TB_MAX_PACKET_LENGTH) {
+        packet.result = TB_WIRE_PACKET_READ_INVALID_LENGTH;
+        return packet;
+    }
+
+    errno = 0;
+    if (!read_exact(fd, &packet.packet_type, 1)) {
+        packet.result = TB_WIRE_PACKET_READ_TYPE_FAILED;
+        packet.error_number = errno;
+        return packet;
+    }
+
+    packet.payload_length = (size_t)packet.packet_length - 1;
+    packet.payload_started = CACurrentMediaTime();
+    errno = 0;
+    if (packet.payload_length > 0 &&
+        !read_exact(fd, payload, packet.payload_length)) {
+        packet.result = TB_WIRE_PACKET_READ_PAYLOAD_FAILED;
+        packet.error_number = errno;
+        return packet;
+    }
+    packet.completed = CACurrentMediaTime();
+    packet.result = TB_WIRE_PACKET_READ_OK;
+    return packet;
+}
+
+static bool environment_flag_enabled(const char *name) {
+    const char *value = getenv(name);
+    return value &&
+        (strcmp(value, "1") == 0 ||
+         strcasecmp(value, "true") == 0 ||
+         strcasecmp(value, "yes") == 0);
 }
 
 static bool read_exact_before(int fd,
@@ -292,6 +1004,7 @@ static bool send_display_profile(int fd, bool supportsDPCM) {
         "\"captureWidth\":5120,\"captureHeight\":2880,"
         "\"supportsHEVCDecode\":false,\"supportsRawNV12\":true,"
         "\"supportsDPCM\":%s,"
+        "\"supportsDisplayLifecycle\":true,"
         "\"inputMonitoringTrusted\":false,"
         "\"accessibilityTrusted\":false,"
         "\"supportsNightShift\":false,\"supportsTrueTone\":false}",
@@ -303,6 +1016,26 @@ static bool send_display_profile(int fd, bool supportsDPCM) {
     header[4] = TB_PACKET_DISPLAY_PROFILE;
     return write_exact(fd, header, sizeof(header)) &&
            write_exact(fd, json, jsonLength);
+}
+
+static bool send_receiver_surface_state(int fd,
+                                        bool available,
+                                        uint64_t epoch) {
+    char json[96];
+    const int jsonCharacters = snprintf(
+        json, sizeof(json),
+        "{\"available\":%s,\"epoch\":%llu}",
+        available ? "true" : "false",
+        (unsigned long long)epoch);
+    if (jsonCharacters < 0 || (size_t)jsonCharacters >= sizeof(json)) {
+        return false;
+    }
+    const size_t jsonLength = (size_t)jsonCharacters;
+    uint8_t header[5];
+    store_be32(header, (uint32_t)(1 + jsonLength));
+    header[4] = TB_PACKET_RECEIVER_SURFACE_STATE;
+    return write_exact(fd, header, sizeof(header)) &&
+        write_exact(fd, json, jsonLength);
 }
 
 static int compare_double(const void *left, const void *right) {
@@ -805,17 +1538,18 @@ int main(int argc, const char *argv[]) {
         [NSApplication sharedApplication];
         BOOL activationPolicySet =
             [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-        if (!activationPolicySet) {
-            // Ventura may reject the Regular transform for a diagnostic app
-            // launched from an SSH-controlled Aqua session. Accessory still
-            // owns visible windows and is sufficient for a display appliance.
-            activationPolicySet =
-                [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
-        }
         fprintf(stderr,
                 "TB_PROTOCOL_METAL activationPolicy=%ld requestedPolicySet=%s\n",
                 (long)NSApp.activationPolicy,
                 activationPolicySet ? "true" : "false");
+        receiver_diagnostic(
+            NSApp.activationPolicy == NSApplicationActivationPolicyRegular
+                ? OS_LOG_TYPE_DEFAULT
+                : OS_LOG_TYPE_ERROR,
+            "appkit=pre-run requestedPolicy=regular accepted=%s "
+            "effectivePolicy=%ld",
+            activationPolicySet ? "true" : "false",
+            (long)NSApp.activationPolicy);
         // This executable supplies its own main() instead of NSApplicationMain.
         // Build the principal menu before entering NSApplication's event loop;
         // -run completes the AppKit launch lifecycle exactly once.
@@ -872,8 +1606,11 @@ int main(int argc, const char *argv[]) {
         while (!screen) {
         @autoreleasepool {
             panelWakeAttempt++;
-            const int wakeResult =
-                tb_power_lifecycle_begin_session(&powerLifecycle);
+            const BOOL startupSessionAvailable =
+                current_startup_gui_session_available();
+            const int wakeResult = startupSessionAvailable
+                ? tb_power_lifecycle_begin_session(&powerLifecycle)
+                : EACCES;
             if (wakeResult == 0) {
                 const CFTimeInterval panelWakeDeadline =
                     CACurrentMediaTime() + 8.0;
@@ -892,6 +1629,15 @@ int main(int argc, const char *argv[]) {
             tb_power_lifecycle_end_session(&powerLifecycle);
             if (screen) break;
 
+            if (!startupSessionAvailable &&
+                (panelWakeAttempt == 1 || panelWakeAttempt % 120 == 0)) {
+                receiver_diagnostic(
+                    OS_LOG_TYPE_DEFAULT,
+                    "startup=panel-wake-deferred "
+                    "reason=gui-session-unavailable attempt=%u",
+                    panelWakeAttempt);
+            }
+
             if (!serveForever) {
                 receiver_diagnostic(
                     OS_LOG_TYPE_ERROR,
@@ -909,13 +1655,20 @@ int main(int argc, const char *argv[]) {
             const double backoffSeconds = MIN(
                 30.0,
                 2.0 * (double)MIN(panelWakeAttempt, 15u));
-            receiver_diagnostic(
-                wakeResult == 0 ? OS_LOG_TYPE_ERROR : OS_LOG_TYPE_FAULT,
-                "startup=panel-wait attempt=%u wakeResult=%d "
-                "fastPathSeconds=8 backoffSeconds=%.0f",
-                panelWakeAttempt,
-                wakeResult,
-                backoffSeconds);
+            if (startupSessionAvailable ||
+                panelWakeAttempt == 1 || panelWakeAttempt % 120 == 0) {
+                receiver_diagnostic(
+                    startupSessionAvailable
+                        ? (wakeResult == 0
+                            ? OS_LOG_TYPE_ERROR
+                            : OS_LOG_TYPE_FAULT)
+                        : OS_LOG_TYPE_DEFAULT,
+                    "startup=panel-wait attempt=%u wakeResult=%d "
+                    "fastPathSeconds=8 backoffSeconds=%.0f",
+                    panelWakeAttempt,
+                    wakeResult,
+                    backoffSeconds);
+            }
             const CFTimeInterval retryDeadline =
                 CACurrentMediaTime() + backoffSeconds;
             do {
@@ -940,6 +1693,12 @@ int main(int argc, const char *argv[]) {
                         backing:NSBackingStoreBuffered
                           defer:NO
                          screen:screen];
+        TBCursorShieldView *surfaceView = [[TBCursorShieldView alloc]
+            initWithFrame:NSMakeRect(0.0, 0.0,
+                                     NSWidth(screen.frame),
+                                     NSHeight(screen.frame))];
+        surfaceView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        window.contentView = surfaceView;
         [window setFrame:screen.frame display:NO];
         window.title = @"iMac 5K Display Appliance";
         window.releasedWhenClosed = NO;
@@ -971,6 +1730,22 @@ int main(int argc, const char *argv[]) {
                                                                  blue:0.086
                                                                 alpha:1.0].CGColor;
         [window.contentView addSubview:idleOverlay];
+
+        /* An opaque privacy cover is independent of the friendly idle UI.
+         * It remains above the live Metal surface whenever this Aqua session
+         * or app loses foreground ownership, while rendering/transport stay
+         * alive underneath for a fast post-unlock recovery. */
+        NSView *privacyOverlay = [[NSView alloc]
+            initWithFrame:window.contentView.bounds];
+        privacyOverlay.autoresizingMask =
+            NSViewWidthSizable | NSViewHeightSizable;
+        privacyOverlay.wantsLayer = YES;
+        privacyOverlay.layer.backgroundColor = NSColor.blackColor.CGColor;
+        privacyOverlay.accessibilityHidden = YES;
+        privacyOverlay.hidden = NO;
+        [window.contentView addSubview:privacyOverlay
+                             positioned:NSWindowAbove
+                             relativeTo:nil];
 
         NSTextField *titleLabel = [NSTextField labelWithString:
             @"iMac 5K Display Appliance"];
@@ -1062,19 +1837,38 @@ int main(int argc, const char *argv[]) {
         }
 
         void *renderer = tb_native_metal_create();
+        const bool receiveOverlapEnabled =
+            environment_flag_enabled("TB_RECEIVE_OVERLAP");
         uint8_t *payload = (uint8_t *)malloc(TB_MAX_PACKET_LENGTH - 1);
-        // Persistent appliance mode retains only the first ten minutes of
-        // timing samples. Frame transport itself stays unbounded, while
-        // diagnostic memory remains fixed and small.
-        const uint32_t timingCapacity = serveForever ? 36000 : expectedFrames;
+        uint8_t *payloadSecondary = receiveOverlapEnabled
+            ? (uint8_t *)malloc(TB_MAX_PACKET_LENGTH - 1)
+            : NULL;
+        dispatch_queue_t receivePrefetchQueue = receiveOverlapEnabled
+            ? dispatch_queue_create(
+                "com.targetbridge.receiver5k.receive-prefetch",
+                DISPATCH_QUEUE_SERIAL)
+            : NULL;
+        dispatch_semaphore_t receivePrefetchDone = receiveOverlapEnabled
+            ? dispatch_semaphore_create(0)
+            : NULL;
+        /* Persistent appliance mode retains a rolling ten-second window at
+         * the 60 FPS target. The old 36,000-entry first-ten-minute arrays were
+         * bounded, but lazily dirtying their pages looked exactly like an RSS
+         * leak during qualification and spent memory on stale startup data.
+         * Bounded diagnostic runs retain every requested sample. */
+        const uint32_t timingCapacity = serveForever ? 600 : expectedFrames;
         double *packetTimes = (double *)calloc(
             (size_t)timingCapacity, sizeof(*packetTimes));
         double *completionGaps = (double *)calloc(
             (size_t)timingCapacity, sizeof(*completionGaps));
-        if (!renderer || !payload || !packetTimes || !completionGaps) {
+        if (!renderer || !payload || !packetTimes || !completionGaps ||
+            (receiveOverlapEnabled &&
+             (!payloadSecondary || !receivePrefetchQueue ||
+              !receivePrefetchDone))) {
             fprintf(stderr, "TB_PROTOCOL_METAL result=failed reason=allocation\n");
             free(completionGaps);
             free(packetTimes);
+            free(payloadSecondary);
             free(payload);
             if (renderer) tb_native_metal_destroy(renderer);
             [window close];
@@ -1099,6 +1893,11 @@ int main(int argc, const char *argv[]) {
                                      positioned:NSWindowAbove
                                      relativeTo:nil];
                 tb_native_metal_set_visible(renderer, 0);
+                if (!privacyOverlay.hidden) {
+                    [window.contentView addSubview:privacyOverlay
+                                         positioned:NSWindowAbove
+                                         relativeTo:nil];
+                }
                 [window orderFrontRegardless];
                 [window displayIfNeeded];
                 [window.contentView displayIfNeeded];
@@ -1123,6 +1922,11 @@ int main(int argc, const char *argv[]) {
                 tb_native_metal_set_visible(renderer, 1);
                 idleOverlay.accessibilityHidden = YES;
                 idleOverlay.hidden = YES;
+                if (!privacyOverlay.hidden) {
+                    [window.contentView addSubview:privacyOverlay
+                                         positioned:NSWindowAbove
+                                         relativeTo:nil];
+                }
                 [CATransaction commit];
                 [CATransaction flush];
             };
@@ -1143,6 +1947,11 @@ int main(int argc, const char *argv[]) {
                 [window.contentView addSubview:idleOverlay
                                      positioned:NSWindowAbove
                                      relativeTo:nil];
+                if (!privacyOverlay.hidden) {
+                    [window.contentView addSubview:privacyOverlay
+                                         positioned:NSWindowAbove
+                                         relativeTo:nil];
+                }
                 [CATransaction commit];
                 [CATransaction flush];
             };
@@ -1185,6 +1994,7 @@ int main(int argc, const char *argv[]) {
             free(shutdownGate);
             free(completionGaps);
             free(packetTimes);
+            free(payloadSecondary);
             free(payload);
             tb_native_metal_destroy(renderer);
             [window close];
@@ -1208,6 +2018,7 @@ int main(int argc, const char *argv[]) {
              * alive until the imminent return instead of risking a UAF. */
             free(completionGaps);
             free(packetTimes);
+            free(payloadSecondary);
             free(payload);
             tb_native_metal_destroy(renderer);
             [window close];
@@ -1217,24 +2028,123 @@ int main(int argc, const char *argv[]) {
             return 78;
         }
         const bool supportsDPCM = tb_native_metal_supports_dpcm(renderer) != 0;
+        const unsigned boundedReceiveMiB = receiveOverlapEnabled ? 128u : 64u;
         TBBonjourPublisher *bonjour = [[TBBonjourPublisher alloc]
             initWithPort:(uint16_t)portValue supportsDPCM:supportsDPCM];
         if (serveForever) {
-            printf("TB_PROTOCOL_METAL state=listening port=%d mode=serve boundedBufferMiB=64 timingWindowFrames=%u\n",
-                   portValue, timingCapacity);
+            printf("TB_PROTOCOL_METAL state=listening port=%d mode=serve "
+                   "receiveOverlap=%s boundedBufferMiB=%u "
+                   "timingWindowFrames=%u\n",
+                   portValue,
+                   receiveOverlapEnabled ? "true" : "false",
+                   boundedReceiveMiB,
+                   timingCapacity);
         } else {
-            printf("TB_PROTOCOL_METAL state=listening port=%d expectedFrames=%u boundedBufferMiB=64\n",
-                   portValue, expectedFrames);
+            printf("TB_PROTOCOL_METAL state=listening port=%d "
+                   "expectedFrames=%u receiveOverlap=%s "
+                   "boundedBufferMiB=%u\n",
+                   portValue,
+                   expectedFrames,
+                   receiveOverlapEnabled ? "true" : "false",
+                   boundedReceiveMiB);
         }
         fflush(stdout);
         receiver_diagnostic(
             OS_LOG_TYPE_DEFAULT,
-            "state=listening port=%d mode=%s dpcm=%s boundedBufferMiB=64",
+            "state=listening port=%d mode=%s dpcm=%s "
+            "receiveOverlap=%s boundedBufferMiB=%u",
             portValue,
             serveForever ? "serve" : "bounded",
-            supportsDPCM ? "true" : "false");
+            supportsDPCM ? "true" : "false",
+            receiveOverlapEnabled ? "true" : "false",
+            boundedReceiveMiB);
         __block int exitCode = 0;
         __block bool localCursorHidden = false;
+        struct tb_receiver_lifecycle_snapshot *lifecycleSnapshot =
+            (struct tb_receiver_lifecycle_snapshot *)calloc(
+                1, sizeof(*lifecycleSnapshot));
+        if (!lifecycleSnapshot ||
+            pthread_mutex_init(&lifecycleSnapshot->lock, NULL) != 0) {
+            fprintf(stderr,
+                    "TB_PROTOCOL_METAL result=failed reason=lifecycle-lock\n");
+            dispatch_source_cancel(sigtermSource);
+            dispatch_source_cancel(sigintSource);
+            tb_shutdown_gate_close_listener(shutdownGate, &listener);
+            [bonjour invalidate];
+            tb_power_lifecycle_stop(&powerLifecycle);
+            free(completionGaps);
+            free(packetTimes);
+            free(payloadSecondary);
+            free(payload);
+            tb_native_metal_destroy(renderer);
+            [window close];
+            free(lifecycleSnapshot);
+            return 77;
+        }
+        presentationController.cursorActivationHandler = ^{
+            surfaceView.suppressLocalCursor = YES;
+            (void)ensure_global_cursor_hidden(
+                selectedDisplayID,
+                &localCursorHidden,
+                "session=active");
+        };
+        presentationController.cursorDeactivationHandler = ^{
+            (void)restore_global_cursor(
+                selectedDisplayID,
+                &localCursorHidden,
+                "cursor-policy=release");
+            surfaceView.suppressLocalCursor = NO;
+        };
+        presentationController.privacyBlankHandler = ^{
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            privacyOverlay.hidden = NO;
+            [window.contentView addSubview:privacyOverlay
+                                 positioned:NSWindowAbove
+                                 relativeTo:nil];
+            [window displayIfNeeded];
+            [window.contentView displayIfNeeded];
+            [CATransaction commit];
+            [CATransaction flush];
+        };
+        presentationController.privacyResumeHandler = ^{
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            privacyOverlay.hidden = YES;
+            [CATransaction commit];
+            [CATransaction flush];
+        };
+        presentationController.displayPowerGateHandler = ^BOOL(BOOL active) {
+            if (!active) {
+                tb_power_lifecycle_end_session(&powerLifecycle);
+                const BOOL released =
+                    powerLifecycle.display_sleep_assertion == 0 &&
+                    powerLifecycle.user_activity_assertion == 0;
+                tb_receiver_lifecycle_snapshot_set_power_failure(
+                    lifecycleSnapshot, !released);
+                return released;
+            }
+            const BOOL began =
+                tb_power_lifecycle_begin_session(&powerLifecycle) == 0;
+            tb_receiver_lifecycle_snapshot_set_power_failure(
+                lifecycleSnapshot, !began);
+            return began;
+        };
+        presentationController.lifecycleStateHandler = ^(
+            BOOL receiverSurfaceAvailable,
+            uint64_t receiverEpoch,
+            BOOL sourceAwake,
+            BOOL framesAllowed,
+            uint64_t presentationGeneration) {
+            tb_receiver_lifecycle_snapshot_store(
+                lifecycleSnapshot,
+                receiverSurfaceAvailable,
+                receiverEpoch,
+                sourceAwake,
+                framesAllowed,
+                presentationGeneration);
+        };
+        [presentationController refreshLifecycleState];
         dispatch_queue_t transportQueue = dispatch_queue_create(
             "com.targetbridge.receiver5k.transport",
             DISPATCH_QUEUE_SERIAL);
@@ -1250,9 +2160,12 @@ int main(int argc, const char *argv[]) {
             tb_power_lifecycle_stop(&powerLifecycle);
             free(completionGaps);
             free(packetTimes);
+            free(payloadSecondary);
             free(payload);
             tb_native_metal_destroy(renderer);
             [window close];
+            pthread_mutex_destroy(&lifecycleSnapshot->lock);
+            free(lifecycleSnapshot);
             signal(SIGTERM, SIG_DFL);
             signal(SIGINT, SIG_DFL);
             return 77;
@@ -1375,17 +2288,6 @@ int main(int argc, const char *argv[]) {
         }
         showIdleState(@"MacBook detected · starting",
                       @"Preparing the native 5K display stream.");
-        if (tb_power_lifecycle_begin_session(&powerLifecycle) != 0) {
-            tb_shutdown_gate_close_peer(shutdownGate, &peer);
-            if (tb_shutdown_gate_is_requested(shutdownGate)) break;
-            if (serveForever) {
-                showIdleState(@"Couldn’t wake the display · retrying",
-                              @"The receiver will try again automatically.");
-                continue;
-            }
-            exitCode = 74;
-            break;
-        }
         if (!send_display_profile(peer, supportsDPCM)) {
             fprintf(stderr, "TB_PROTOCOL_METAL result=failed reason=profile-send\n");
             tb_shutdown_gate_close_peer(shutdownGate, &peer);
@@ -1401,9 +2303,9 @@ int main(int argc, const char *argv[]) {
         }
         showIdleState(@"Connected · waiting for the first frame",
                       @"The native 5K display stream is starting.");
-        const uint64_t sessionPresentationEpoch =
+        uint64_t activeRendererPresentationEpoch =
             beginCoveredPresentation();
-        if (sessionPresentationEpoch == 0) {
+        if (activeRendererPresentationEpoch == 0) {
             fprintf(stderr,
                     "TB_PROTOCOL_METAL result=failed reason=surface-prepare\n");
             tb_shutdown_gate_close_peer(shutdownGate, &peer);
@@ -1418,24 +2320,36 @@ int main(int argc, const char *argv[]) {
             break;
         }
         dispatch_sync(dispatch_get_main_queue(), ^{
-            if (!tb_shutdown_gate_is_requested(shutdownGate) &&
-                !localCursorHidden) {
-                const CGError cursorResult =
-                    CGDisplayHideCursor(selectedDisplayID);
-                if (cursorResult == kCGErrorSuccess) {
-                    localCursorHidden = true;
-                    receiver_diagnostic(
-                        OS_LOG_TYPE_DEFAULT,
-                        "session=active localCursor=hidden display=%u",
-                        (unsigned int)selectedDisplayID);
-                } else {
-                    receiver_diagnostic(
-                        OS_LOG_TYPE_ERROR,
-                        "session=active localCursor=hide-failed error=%d",
-                        (int)cursorResult);
-                }
+            if (!tb_shutdown_gate_is_requested(shutdownGate)) {
+                presentationController.streamActive = YES;
             }
         });
+        bool initialSurfaceAvailable = false;
+        bool initialPowerFailure = false;
+        uint64_t initialSurfaceEpoch = 0;
+        tb_receiver_lifecycle_snapshot_load(
+            lifecycleSnapshot,
+            &initialSurfaceAvailable,
+            &initialSurfaceEpoch,
+            NULL,
+            NULL,
+            NULL,
+            &initialPowerFailure);
+        if (initialPowerFailure ||
+            !send_receiver_surface_state(
+                peer, initialSurfaceAvailable, initialSurfaceEpoch)) {
+            fprintf(stderr,
+                    "TB_PROTOCOL_METAL result=failed "
+                    "reason=initial-lifecycle-state\n");
+            tb_shutdown_gate_close_peer(shutdownGate, &peer);
+            dispatch_sync(dispatch_get_main_queue(), ^{
+                presentationController.streamActive = NO;
+            });
+            if (tb_shutdown_gate_is_requested(shutdownGate)) break;
+            if (serveForever) continue;
+            exitCode = 74;
+            break;
+        }
         printf("TB_PROTOCOL_METAL state=profile-sent capture=5120x2880 rawNV12=true dpcm=%s\n",
                supportsDPCM ? "true" : "false");
         fflush(stdout);
@@ -1469,58 +2383,265 @@ int main(int argc, const char *argv[]) {
         bool processFatal = false;
         bool physicalGateChecked = false;
         bool liveGPUCompletionLogged = false;
-        bool liveSurfaceShown = false;
+        uint64_t lastSentReceiverSurfaceEpoch = initialSurfaceEpoch;
+        uint64_t acceptedFrameGeneration = 0;
+        uint64_t rendererPresentationGeneration = 0;
+        uint64_t pendingFreshGeneration = 0;
+        uint64_t pendingFreshRendererEpoch = 0;
+        size_t primaryPayloadHighWater = 0;
+        size_t secondaryPayloadHighWater = 0;
         bool peerReadTimedOut = false;
+        const char *sessionEndReason = "frame-limit";
+        int sessionEndErrno = 0;
+        uint32_t sessionEndPacketLength = 0;
+        uint8_t sessionEndPacketType = 0;
+        uint8_t *currentPayload = payload;
+        uint8_t *nextPayload = payloadSecondary;
+        __block struct tb_wire_packet prefetchedPacket;
+        memset(&prefetchedPacket, 0, sizeof(prefetchedPacket));
+        __block bool receivePrefetchInFlight = false;
+        uint64_t receivePrefetchPackets = 0;
+        __block uint64_t receivePrefetchAborts = 0;
+        double receivePrefetchWaitTotalMS = 0.0;
+        double receivePrefetchWaitMaxMS = 0.0;
+
+        void (^cancelReceivePrefetch)(void) = ^{
+            if (!receivePrefetchInFlight) return;
+            receivePrefetchAborts++;
+            (void)shutdown(peer, SHUT_RDWR);
+            const long waitResult = dispatch_semaphore_wait(
+                receivePrefetchDone,
+                dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
+            if (waitResult != 0) {
+                /* The task may still own the secondary slot. Never continue
+                 * into ordinary teardown/free on an unproven completion. */
+                dispatch_sync(dispatch_get_main_queue(), ^{
+                    (void)restore_global_cursor(
+                        selectedDisplayID,
+                        &localCursorHidden,
+                        "prefetch-timeout");
+                    surfaceView.suppressLocalCursor = NO;
+                });
+                tb_power_lifecycle_end_session(&powerLifecycle);
+                receiver_diagnostic(
+                    OS_LOG_TYPE_FAULT,
+                    "shutdown=failed reason=prefetch-cancel-timeout "
+                    "buffer=quarantined process=fail-fast");
+                _exit(79);
+            }
+            receivePrefetchInFlight = false;
+        };
 
         while (attemptedFrames < expectedFrames &&
                !tb_shutdown_gate_is_requested(shutdownGate)) {
             @autoreleasepool {
+            // These describe the packet that ended this loop iteration, not a
+            // previously accepted control or frame packet.
+            sessionEndErrno = 0;
+            sessionEndPacketLength = 0;
+            sessionEndPacketType = 0;
+            uint64_t currentPresentationGeneration = 0;
+            tb_receiver_lifecycle_snapshot_load(
+                lifecycleSnapshot,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                &currentPresentationGeneration,
+                NULL);
             struct tb_native_metal_stats liveStats;
-            tb_native_metal_get_stats(renderer, &liveStats);
-            if (!liveSurfaceShown &&
-                liveStats.last_presented_epoch >= sessionPresentationEpoch) {
-                showLiveSurface();
-                liveSurfaceShown = true;
-                receiver_diagnostic(
-                    OS_LOG_TYPE_DEFAULT,
-                    "session=presented epoch=%llu presented=%llu",
-                    (unsigned long long)sessionPresentationEpoch,
-                    (unsigned long long)liveStats.presented_frames);
+            tb_native_metal_get_runtime_stats(renderer, &liveStats);
+            if (pendingFreshGeneration != 0 &&
+                pendingFreshGeneration != currentPresentationGeneration) {
+                pendingFreshGeneration = 0;
+                pendingFreshRendererEpoch = 0;
+            }
+            if (pendingFreshGeneration != 0 &&
+                pendingFreshRendererEpoch != 0 &&
+                liveStats.last_presented_epoch >=
+                    pendingFreshRendererEpoch) {
+                const uint64_t presentedGeneration = pendingFreshGeneration;
+                const uint64_t presentedEpoch = pendingFreshRendererEpoch;
+                pendingFreshGeneration = 0;
+                pendingFreshRendererEpoch = 0;
+                __block BOOL acceptedPresentation = NO;
+                dispatch_sync(dispatch_get_main_queue(), ^{
+                    acceptedPresentation = [presentationController
+                        markFreshFramePresentedForGeneration:
+                            presentedGeneration];
+                });
+                if (acceptedPresentation) {
+                    showLiveSurface();
+                    receiver_diagnostic(
+                        OS_LOG_TYPE_DEFAULT,
+                        "lifecycle-generation=%llu presentedEpoch=%llu",
+                        (unsigned long long)presentedGeneration,
+                        (unsigned long long)presentedEpoch);
+                }
             }
             if (liveStats.gpu_error_frames >
                 sessionBaseline.gpu_error_frames) {
                 rendererFailures++;
                 processFatal = true;
+                sessionEndReason = "renderer-gpu-error-before-read";
                 break;
             }
-            uint8_t lengthBytes[4];
-            errno = 0;
-            if (!read_exact(peer, lengthBytes, sizeof(lengthBytes))) {
-                peerReadTimedOut = errno == EAGAIN || errno == EWOULDBLOCK;
+            struct tb_wire_packet packet;
+            if (receivePrefetchInFlight) {
+                const double waitStarted = CACurrentMediaTime();
+                const long waitResult = dispatch_semaphore_wait(
+                    receivePrefetchDone,
+                    dispatch_time(DISPATCH_TIME_NOW, 17 * NSEC_PER_SEC));
+                if (waitResult != 0) {
+                    processFatal = true;
+                    sessionEndReason = "receive-prefetch-timeout";
+                    cancelReceivePrefetch();
+                    break;
+                }
+                const double waitMS =
+                    (CACurrentMediaTime() - waitStarted) * 1000.0;
+                receivePrefetchWaitTotalMS += waitMS;
+                if (waitMS > receivePrefetchWaitMaxMS) {
+                    receivePrefetchWaitMaxMS = waitMS;
+                }
+                receivePrefetchInFlight = false;
+                packet = prefetchedPacket;
+                uint8_t *previousPayload = currentPayload;
+                currentPayload = nextPayload;
+                nextPayload = previousPayload;
+                receivePrefetchPackets++;
+            } else {
+                packet = read_wire_packet(peer, currentPayload);
+            }
+
+            sessionEndErrno = packet.error_number;
+            sessionEndPacketLength = packet.packet_length;
+            sessionEndPacketType = packet.packet_type;
+            peerReadTimedOut =
+                packet.error_number == EAGAIN ||
+                packet.error_number == EWOULDBLOCK;
+            if (packet.result != TB_WIRE_PACKET_READ_OK) {
+                switch (packet.result) {
+                case TB_WIRE_PACKET_READ_LENGTH_FAILED:
+                    sessionEndReason = peerReadTimedOut
+                        ? "packet-length-timeout"
+                        : (packet.error_number == 0
+                            ? "peer-closed-before-packet-length"
+                            : "packet-length-read-error");
+                    break;
+                case TB_WIRE_PACKET_READ_INVALID_LENGTH:
+                    sessionEndReason = "invalid-packet-length";
+                    sessionRejected = true;
+                    fprintf(stderr,
+                            "TB_PROTOCOL_METAL error=invalid-packet-length value=%u\n",
+                            packet.packet_length);
+                    break;
+                case TB_WIRE_PACKET_READ_TYPE_FAILED:
+                    sessionEndReason = peerReadTimedOut
+                        ? "packet-type-timeout"
+                        : (packet.error_number == 0
+                            ? "peer-closed-before-packet-type"
+                            : "packet-type-read-error");
+                    break;
+                case TB_WIRE_PACKET_READ_PAYLOAD_FAILED:
+                    sessionEndReason = peerReadTimedOut
+                        ? "packet-payload-timeout"
+                        : (packet.error_number == 0
+                            ? "peer-closed-during-packet-payload"
+                            : "packet-payload-read-error");
+                    break;
+                case TB_WIRE_PACKET_READ_OK:
+                    break;
+                }
                 break;
             }
-            const uint32_t packetLength = load_be32(lengthBytes);
-            if (packetLength < 1 || packetLength > TB_MAX_PACKET_LENGTH) {
-                fprintf(stderr,
-                        "TB_PROTOCOL_METAL error=invalid-packet-length value=%u\n",
-                        packetLength);
+            const uint8_t packetType = packet.packet_type;
+            const size_t payloadLength = packet.payload_length;
+            if (currentPayload == payload) {
+                if (payloadLength > primaryPayloadHighWater) {
+                    primaryPayloadHighWater = payloadLength;
+                }
+            } else if (payloadLength > secondaryPayloadHighWater) {
+                secondaryPayloadHighWater = payloadLength;
+            }
+            const double packetStarted = packet.payload_started;
+            const double completed = packet.completed;
+
+            bool receiverSurfaceAvailable = false;
+            bool sourceAwake = true;
+            bool framesAllowed = false;
+            bool powerGateFailed = false;
+            uint64_t receiverSurfaceEpoch = 0;
+            uint64_t presentationGeneration = 0;
+            tb_receiver_lifecycle_snapshot_load(
+                lifecycleSnapshot,
+                &receiverSurfaceAvailable,
+                &receiverSurfaceEpoch,
+                &sourceAwake,
+                &framesAllowed,
+                &presentationGeneration,
+                &powerGateFailed);
+            if (powerGateFailed) {
+                sessionRejected = true;
+                sessionEndReason = "display-power-gate-failed";
                 break;
             }
-            uint8_t packetType = 0;
-            errno = 0;
-            if (!read_exact(peer, &packetType, 1)) {
-                peerReadTimedOut = errno == EAGAIN || errno == EWOULDBLOCK;
-                break;
+            if (receiverSurfaceEpoch != lastSentReceiverSurfaceEpoch) {
+                if (!send_receiver_surface_state(
+                        peer,
+                        receiverSurfaceAvailable,
+                        receiverSurfaceEpoch)) {
+                    sessionEndReason = "surface-state-send-failed";
+                    break;
+                }
+                lastSentReceiverSurfaceEpoch = receiverSurfaceEpoch;
             }
-            const size_t payloadLength = (size_t)packetLength - 1;
-            const double packetStarted = CACurrentMediaTime();
-            errno = 0;
-            if (payloadLength > 0 &&
-                !read_exact(peer, payload, payloadLength)) {
-                peerReadTimedOut = errno == EAGAIN || errno == EWOULDBLOCK;
-                break;
+
+            if (packetType == TB_PACKET_SOURCE_DISPLAY_STATE) {
+                int awake = 0;
+                uint64_t sourceEpoch = 0;
+                uint64_t acknowledgedReceiverEpoch = 0;
+                if (!tb_display_lifecycle_parse_state_json(
+                        currentPayload,
+                        payloadLength,
+                        "awake",
+                        &awake,
+                        &sourceEpoch) ||
+                    !tb_display_lifecycle_parse_uint64_json(
+                        currentPayload,
+                        payloadLength,
+                        "receiverEpoch",
+                        &acknowledgedReceiverEpoch)) {
+                    sessionRejected = true;
+                    sessionEndReason = "malformed-source-display-state";
+                    fprintf(stderr,
+                            "TB_PROTOCOL_METAL error=malformed-source-display-state "
+                            "payload=%zu\n",
+                            payloadLength);
+                    cancelReceivePrefetch();
+                    break;
+                }
+                __block enum tb_display_lifecycle_update update =
+                    TB_DISPLAY_LIFECYCLE_INVALID;
+                dispatch_sync(dispatch_get_main_queue(), ^{
+                    update = [presentationController
+                        applySourceDisplayAwake:awake != 0
+                                           epoch:sourceEpoch
+                                   receiverEpoch:acknowledgedReceiverEpoch];
+                });
+                if (update == TB_DISPLAY_LIFECYCLE_STALE) {
+                    receiver_diagnostic(
+                        OS_LOG_TYPE_DEFAULT,
+                        "display-lifecycle=source-state-ignored "
+                        "reason=stale epoch=%llu",
+                        (unsigned long long)sourceEpoch);
+                }
+                if (update == TB_DISPLAY_LIFECYCLE_APPLIED) {
+                    pendingFreshGeneration = 0;
+                    pendingFreshRendererEpoch = 0;
+                }
+                continue;
             }
-            const double completed = CACurrentMediaTime();
 
             if (packetType == TB_PACKET_VIDEO_PARAMETERS ||
                 packetType == TB_PACKET_VIDEO_FRAME) {
@@ -1529,6 +2650,7 @@ int main(int argc, const char *argv[]) {
                         "packetType=0x%02x; lossless DPCM/RAW required\n",
                         packetType);
                 sessionRejected = true;
+                sessionEndReason = "encoded-video-rejected";
                 break;
             }
             if (packetType != TB_PACKET_RAW_FRAME &&
@@ -1536,35 +2658,49 @@ int main(int argc, const char *argv[]) {
                 ignoredPackets++;
                 continue;
             }
+            /* The whole wire packet is already in the one bounded slot. Drop
+             * it before parse/Metal work while either public lifecycle gate is
+             * closed; no partial TBD2 state is retained between packets. */
+            if (!framesAllowed && receiverSurfaceAvailable && sourceAwake) {
+                __block BOOL legacyFrameAllowed = NO;
+                __block uint64_t legacyGeneration = 0;
+                dispatch_sync(dispatch_get_main_queue(), ^{
+                    legacyFrameAllowed = [presentationController
+                        admitLegacyFrameForGeneration:&legacyGeneration];
+                });
+                if (legacyFrameAllowed) {
+                    framesAllowed = true;
+                    presentationGeneration = legacyGeneration;
+                }
+            }
+            if (!framesAllowed) {
+                ignoredPackets++;
+                continue;
+            }
+            acceptedFrameGeneration = presentationGeneration;
             attemptedFrames++;
 
             struct tb_raw_nv12_view frame;
             memset(&frame, 0, sizeof(frame));
+            struct tb_dpcm_info dpcm;
+            memset(&dpcm, 0, sizeof(dpcm));
             __block int renderResult = -1;
             if (packetType == TB_PACKET_RAW_FRAME) {
-                if (!tb_raw_nv12_parse(payload, payloadLength, &frame) ||
+                if (!tb_raw_nv12_parse(
+                        currentPayload, payloadLength, &frame) ||
                     frame.width != 5120 || frame.height != 2880) {
                     malformedRawFrames++;
                     fprintf(stderr,
                             "TB_PROTOCOL_METAL error=malformed-raw-frame payload=%zu\n",
                             payloadLength);
                     sessionRejected = true;
+                    sessionEndReason = "malformed-raw-frame";
                     break;
                 }
-                dispatch_sync(dispatch_get_main_queue(), ^{
-                    renderResult = tb_native_metal_render_nv12_planes(
-                        renderer,
-                        frame.y, (int)frame.y_stride,
-                        frame.uv, (int)frame.uv_stride,
-                        (int)frame.width, (int)frame.height,
-                        0, 0, (int)frame.width, (int)frame.height,
-                        0, 0, 0);
-                    [CATransaction flush];
-                });
             } else {
-                struct tb_dpcm_info dpcm;
                 if (!supportsDPCM ||
-                    tb_dpcm_parse(payload, payloadLength, &dpcm) != 0 ||
+                    tb_dpcm_parse(
+                        currentPayload, payloadLength, &dpcm) != 0 ||
                     dpcm.width != 5120 || dpcm.height != 2880 ||
                     dpcm.ten_bit || !dpcm.alpha_omitted) {
                     malformedDPCMFrames++;
@@ -1572,6 +2708,7 @@ int main(int argc, const char *argv[]) {
                             "TB_PROTOCOL_METAL error=malformed-or-unsupported-dpcm-frame payload=%zu\n",
                             payloadLength);
                     sessionRejected = true;
+                    sessionEndReason = "malformed-or-unsupported-dpcm-frame";
                     break;
                 }
                 if (!physicalGateChecked) {
@@ -1584,12 +2721,62 @@ int main(int argc, const char *argv[]) {
                     });
                     if (!panelAccepted) {
                         sessionRejected = true;
+                        sessionEndReason = "physical-panel-gate-rejected";
                         break;
                     }
                 }
+            }
+
+            if (acceptedFrameGeneration != rendererPresentationGeneration) {
+                const uint64_t nextRendererEpoch = beginCoveredPresentation();
+                if (nextRendererEpoch == 0) {
+                    sessionRejected = true;
+                    sessionEndReason = "lifecycle-presentation-prepare-failed";
+                    cancelReceivePrefetch();
+                    break;
+                }
+                activeRendererPresentationEpoch = nextRendererEpoch;
+                rendererPresentationGeneration = acceptedFrameGeneration;
+                pendingFreshGeneration = acceptedFrameGeneration;
+                pendingFreshRendererEpoch = nextRendererEpoch;
+            }
+
+            /* Read packet n+1 into the other fixed slot while main submits
+             * packet n. There is never more than one prefetch task, and the
+             * slot is not swapped/reused until its completion semaphore has
+             * established that read_wire_packet returned. */
+            if (receiveOverlapEnabled &&
+                attemptedFrames < expectedFrames &&
+                !tb_shutdown_gate_is_requested(shutdownGate)) {
+                NSCAssert(!receivePrefetchInFlight,
+                          @"receive prefetch must be single-flight");
+                uint8_t *prefetchTarget = nextPayload;
+                receivePrefetchInFlight = true;
+                dispatch_async(receivePrefetchQueue, ^{
+                    @try {
+                        prefetchedPacket =
+                            read_wire_packet(peer, prefetchTarget);
+                    } @finally {
+                        dispatch_semaphore_signal(receivePrefetchDone);
+                    }
+                });
+            }
+
+            if (packetType == TB_PACKET_RAW_FRAME) {
+                dispatch_sync(dispatch_get_main_queue(), ^{
+                    renderResult = tb_native_metal_render_nv12_planes(
+                        renderer,
+                        frame.y, (int)frame.y_stride,
+                        frame.uv, (int)frame.uv_stride,
+                        (int)frame.width, (int)frame.height,
+                        0, 0, (int)frame.width, (int)frame.height,
+                        0, 0, 0);
+                    [CATransaction flush];
+                });
+            } else {
                 dispatch_sync(dispatch_get_main_queue(), ^{
                     renderResult = tb_native_metal_render_dpcm(
-                        renderer, payload, payloadLength,
+                        renderer, currentPayload, payloadLength,
                         0, 0, dpcm.width, dpcm.height, 0, 0, 0);
                     [CATransaction flush];
                 });
@@ -1598,33 +2785,37 @@ int main(int argc, const char *argv[]) {
                 queueDrops++;
                 if (packetType == TB_PACKET_DPCM_FRAME) {
                     sessionRejected = true;
+                    sessionEndReason = "dpcm-render-queue-full";
+                    cancelReceivePrefetch();
                     break;
                 }
                 continue;
             }
             if (renderResult == TB_NATIVE_METAL_RENDER_TRANSIENT_RETRY) {
                 sessionRejected = true;
+                sessionEndReason = "renderer-transient-retry";
+                cancelReceivePrefetch();
                 break;
             }
             if (renderResult < 0) {
                 rendererFailures++;
                 processFatal = true;
+                sessionEndReason = "renderer-submit-failed";
+                cancelReceivePrefetch();
                 break;
             }
-
             const double packetMilliseconds =
                 (completed - packetStarted) * 1000.0;
             if (receivedFrames == 0) firstCompletion = completed;
-            if (previousCompletion > 0.0 &&
-                receivedFrames > 0 && receivedFrames <= timingCapacity) {
-                completionGaps[receivedFrames - 1] =
+            if (previousCompletion > 0.0 && receivedFrames > 0) {
+                const uint32_t gapIndex =
+                    (receivedFrames - 1) % timingCapacity;
+                completionGaps[gapIndex] =
                     (completed - previousCompletion) * 1000.0;
             }
             previousCompletion = completed;
             lastCompletion = completed;
-            if (receivedFrames < timingCapacity) {
-                packetTimes[receivedFrames] = packetMilliseconds;
-            }
+            packetTimes[receivedFrames % timingCapacity] = packetMilliseconds;
             packetTotal += packetMilliseconds;
             if (packetMilliseconds > packetMax) packetMax = packetMilliseconds;
             payloadBytes += payloadLength;
@@ -1661,7 +2852,7 @@ int main(int argc, const char *argv[]) {
                 }
             }
 
-            tb_native_metal_get_stats(renderer, &liveStats);
+            tb_native_metal_get_runtime_stats(renderer, &liveStats);
             const uint64_t sessionCompleted =
                 liveStats.completed_frames - sessionBaseline.completed_frames;
             const uint64_t sessionGPUErrors =
@@ -1687,30 +2878,114 @@ int main(int argc, const char *argv[]) {
             if (sessionGPUErrors > 0) {
                 rendererFailures++;
                 processFatal = true;
+                sessionEndReason = "renderer-gpu-error-after-submit";
+                cancelReceivePrefetch();
                 break;
             }
             }
         }
 
+        /* A shutdown request can make the while condition false after packet
+         * n scheduled the read of n+1. Close the socket before waiting so the
+         * fixed prefetch task cannot outlive its session buffer or peer. */
+        cancelReceivePrefetch();
+
         struct tb_native_metal_stats stats;
         const CFTimeInterval deadline = CACurrentMediaTime() + 3.0;
+        bool presentationDrainFinished = false;
+        bool presentationDrainTimedOut = false;
+        bool presentationInvariantViolation = false;
         do {
             tb_native_metal_get_stats(renderer, &stats);
-            if (stats.completed_frames >= stats.submitted_frames) break;
+            const uint64_t sessionSubmittedNow =
+                stats.submitted_frames - sessionBaseline.submitted_frames;
+            const uint64_t sessionCompletedNow =
+                stats.completed_frames - sessionBaseline.completed_frames;
+            const uint64_t sessionGPUErrorsNow =
+                stats.gpu_error_frames - sessionBaseline.gpu_error_frames;
+            const uint64_t sessionPresentedNow =
+                stats.presented_frames - sessionBaseline.presented_frames;
+            const uint64_t sessionPresentationDropsNow =
+                stats.presentation_dropped_frames -
+                sessionBaseline.presentation_dropped_frames;
+            const int presentationState =
+                tb_native_metal_presentation_resolution_state(
+                    sessionSubmittedNow,
+                    sessionPresentedNow,
+                    sessionPresentationDropsNow);
+            if (presentationState ==
+                TB_NATIVE_METAL_PRESENTATION_INVARIANT) {
+                presentationInvariantViolation = true;
+                break;
+            }
+            /* A failed GPU command may never produce a normal drawable
+             * presentation outcome. Completion still supplies the teardown
+             * barrier; acceptance below remains fail-closed on the GPU error. */
+            if (sessionCompletedNow == sessionSubmittedNow &&
+                (sessionGPUErrorsNow > 0 ||
+                 presentationState == TB_NATIVE_METAL_PRESENTATION_DRAINED)) {
+                presentationDrainFinished = true;
+                break;
+            }
             usleep(5000);
         } while (CACurrentMediaTime() < deadline);
+        /* Reclassify from one final atomic stats snapshot. A callback can land
+         * after the final sleep crosses the deadline but before this read; the
+         * completed outcome must not be reported as a timeout merely because
+         * the preceding loop snapshot was stale. */
         tb_native_metal_get_stats(renderer, &stats);
-        if (!liveSurfaceShown &&
-            stats.last_presented_epoch >= sessionPresentationEpoch) {
-            showLiveSurface();
-            liveSurfaceShown = true;
-            receiver_diagnostic(
-                OS_LOG_TYPE_DEFAULT,
-                "session=presented epoch=%llu presented=%llu",
-                (unsigned long long)sessionPresentationEpoch,
-                (unsigned long long)stats.presented_frames);
+        const uint64_t finalSubmittedFrames =
+            stats.submitted_frames - sessionBaseline.submitted_frames;
+        const uint64_t finalCompletedFrames =
+            stats.completed_frames - sessionBaseline.completed_frames;
+        const uint64_t finalGPUErrorFrames =
+            stats.gpu_error_frames - sessionBaseline.gpu_error_frames;
+        const uint64_t finalPresentedFrames =
+            stats.presented_frames - sessionBaseline.presented_frames;
+        const uint64_t finalPresentationDroppedFrames =
+            stats.presentation_dropped_frames -
+            sessionBaseline.presentation_dropped_frames;
+        const int finalPresentationState =
+            tb_native_metal_presentation_resolution_state(
+                finalSubmittedFrames,
+                finalPresentedFrames,
+                finalPresentationDroppedFrames);
+        presentationInvariantViolation =
+            finalPresentationState == TB_NATIVE_METAL_PRESENTATION_INVARIANT;
+        presentationDrainFinished =
+            !presentationInvariantViolation &&
+            finalCompletedFrames == finalSubmittedFrames &&
+            (finalGPUErrorFrames > 0 ||
+             finalPresentationState == TB_NATIVE_METAL_PRESENTATION_DRAINED);
+        /* A failed GPU command is already a terminal outcome and may never
+         * receive a presentation callback. Do not mislabel that case as a
+         * presentation timeout. Likewise, a completed presentation timeline
+         * with an outstanding GPU completion is solely a GPU drain failure. */
+        presentationDrainTimedOut =
+            !presentationDrainFinished &&
+            !presentationInvariantViolation &&
+            finalGPUErrorFrames == 0 &&
+            finalPresentationState == TB_NATIVE_METAL_PRESENTATION_PENDING;
+        if (pendingFreshGeneration != 0 &&
+            pendingFreshRendererEpoch != 0 &&
+            stats.last_presented_epoch >= pendingFreshRendererEpoch) {
+            uint64_t currentGeneration = 0;
+            tb_receiver_lifecycle_snapshot_load(
+                lifecycleSnapshot, NULL, NULL, NULL, NULL,
+                &currentGeneration, NULL);
+            if (currentGeneration == pendingFreshGeneration) {
+                const uint64_t presentedGeneration = pendingFreshGeneration;
+                pendingFreshGeneration = 0;
+                pendingFreshRendererEpoch = 0;
+                __block BOOL acceptedPresentation = NO;
+                dispatch_sync(dispatch_get_main_queue(), ^{
+                    acceptedPresentation = [presentationController
+                        markFreshFramePresentedForGeneration:
+                            presentedGeneration];
+                });
+                if (acceptedPresentation) showLiveSurface();
+            }
         }
-
         const uint64_t submittedFrames =
             stats.submitted_frames - sessionBaseline.submitted_frames;
         const uint64_t completedFrames =
@@ -1719,6 +2994,23 @@ int main(int argc, const char *argv[]) {
             stats.gpu_error_frames - sessionBaseline.gpu_error_frames;
         const uint64_t droppedFrames =
             stats.dropped_frames - sessionBaseline.dropped_frames;
+        const uint64_t presentedFrames =
+            stats.presented_frames - sessionBaseline.presented_frames;
+        const uint64_t presentationDroppedFrames =
+            stats.presentation_dropped_frames -
+            sessionBaseline.presentation_dropped_frames;
+        const uint64_t currentEpochPresentedFrames =
+            stats.presentation_epoch == activeRendererPresentationEpoch
+                ? stats.presentation_epoch_presented_frames
+                : 0;
+        const double presentedElapsed =
+            currentEpochPresentedFrames > 1
+                ? stats.presentation_epoch_last_time -
+                    stats.presentation_epoch_first_time
+                : 0.0;
+        const double presentedFPS = presentedElapsed > 0.0
+            ? (double)(currentEpochPresentedFrames - 1) / presentedElapsed
+            : 0.0;
         const uint64_t dpcmUploadAllocations =
             stats.dpcm_upload_buffer_allocations -
             sessionBaseline.dpcm_upload_buffer_allocations;
@@ -1728,6 +3020,9 @@ int main(int argc, const char *argv[]) {
         const uint64_t dpcmTextureViewCreations =
             stats.dpcm_texture_view_creations -
             sessionBaseline.dpcm_texture_view_creations;
+        const int64_t metalAllocatedDeltaBytes =
+            (int64_t)stats.device_current_allocated_bytes -
+            (int64_t)sessionBaseline.device_current_allocated_bytes;
         if (!liveGPUCompletionLogged && completedFrames > gpuErrorFrames) {
             liveGPUCompletionLogged = true;
             printf("TB_PROTOCOL_METAL state=live gpuCompleted=%llu "
@@ -1743,23 +3038,52 @@ int main(int argc, const char *argv[]) {
                 (unsigned long long)(completedFrames - gpuErrorFrames),
                 (unsigned long long)submittedFrames);
         }
+        if (presentationInvariantViolation) {
+            rendererFailures++;
+            processFatal = true;
+            sessionEndReason = "presentation-accounting-invariant";
+            fprintf(stderr,
+                    "TB_PROTOCOL_METAL error=presentation-accounting-invariant "
+                    "epoch=%llu activeEpoch=%llu submitted=%llu "
+                    "presented=%llu presentationDrops=%llu\n",
+                    (unsigned long long)stats.presentation_epoch,
+                    (unsigned long long)activeRendererPresentationEpoch,
+                    (unsigned long long)submittedFrames,
+                    (unsigned long long)presentedFrames,
+                    (unsigned long long)presentationDroppedFrames);
+        }
         if (gpuErrorFrames > 0 && !processFatal) {
             rendererFailures++;
             processFatal = true;
+            sessionEndReason = "renderer-gpu-error-during-drain";
         }
         if (completedFrames != submittedFrames && !processFatal) {
             rendererFailures++;
             processFatal = true;
+            sessionEndReason = "gpu-completion-timeout";
             fprintf(stderr,
                     "TB_PROTOCOL_METAL error=gpu-completion-timeout "
                     "submitted=%llu completed=%llu\n",
                     (unsigned long long)submittedFrames,
                     (unsigned long long)completedFrames);
         }
+        if (presentationDrainTimedOut && !processFatal) {
+            rendererFailures++;
+            sessionEndReason = "presentation-callback-timeout";
+            fprintf(stderr,
+                    "TB_PROTOCOL_METAL error=presentation-callback-timeout "
+                    "submitted=%llu presented=%llu presentationDrops=%llu\n",
+                    (unsigned long long)submittedFrames,
+                    (unsigned long long)presentedFrames,
+                    (unsigned long long)presentationDroppedFrames);
+        }
 
         const uint32_t timingCount = receivedFrames < timingCapacity
             ? receivedFrames : timingCapacity;
-        const uint32_t gapCount = timingCount > 1 ? timingCount - 1 : 0;
+        const uint32_t availableGaps = receivedFrames > 1
+            ? receivedFrames - 1 : 0;
+        const uint32_t gapCount = availableGaps < timingCapacity
+            ? availableGaps : timingCapacity;
         const double elapsed =
             receivedFrames > 1 ? lastCompletion - firstCompletion : 0.0;
         const double actualFPS =
@@ -1772,19 +3096,31 @@ int main(int argc, const char *argv[]) {
                         rendererFailures == 0 &&
                         !sessionRejected &&
                         !processFatal &&
+                        !presentationDrainTimedOut &&
+                        !presentationInvariantViolation &&
                         gpuErrorFrames == 0 &&
                         droppedFrames == 0 &&
-                        completedFrames == submittedFrames;
+                        presentationDroppedFrames == 0 &&
+                        completedFrames == submittedFrames &&
+                        presentedFrames == submittedFrames;
         printf(
             "TB_PROTOCOL_METAL result=%s attempted=%u received=%u raw=%u dpcm=%u "
             "ignored=%u malformed=%u malformedRaw=%u malformedDPCM=%u "
             "queueDrops=%u rendererFailures=%u "
             "peerIdleTimeout=%s sessionRejected=%s processFatal=%s "
             "actualFPS=%.3f payloadGbps=%.3f submitted=%llu completed=%llu "
+            "presented=%llu presentationDrops=%llu presentedFPS=%.3f "
+            "presentationDrainTimedOut=%s presentationInvariant=%s "
+            "presentCallbacksOutOfOrder=%llu "
+            "presentGapP50=%.3fms presentGapP95=%.3fms "
+            "presentGapP99=%.3fms presentGapMax=%.3fms "
             "gpuErrors=%llu dropped=%llu inflightMax=%llu "
             "lumaMin=%u lumaMax=%u brightSamples=%.2f%% packetReadAvg=%.3fms "
             "packetReadP50=%.3fms packetReadP95=%.3fms "
             "packetReadP99=%.3fms packetReadMax=%.3fms "
+            "receiveOverlap=%s prefetchPackets=%llu prefetchAborts=%llu "
+            "primaryPayloadHighWater=%zu secondaryPayloadHighWater=%zu "
+            "prefetchWaitAvg=%.3fms prefetchWaitMax=%.3fms "
             "completionGapP50=%.3fms completionGapP95=%.3fms "
             "completionGapP99=%.3fms rawCopyP99=%.2fms "
             "submitP99=%.2fms gpuP99=%.2fms color=%s "
@@ -1801,6 +3137,20 @@ int main(int argc, const char *argv[]) {
             elapsed > 0.0 ? (double)payloadBytes * 8.0 / elapsed / 1e9 : 0.0,
             (unsigned long long)submittedFrames,
             (unsigned long long)completedFrames,
+            (unsigned long long)presentedFrames,
+            (unsigned long long)presentationDroppedFrames,
+            presentedFPS,
+            presentationDrainTimedOut ? "true" : "false",
+            presentationInvariantViolation ? "failed" : "ok",
+            (unsigned long long)
+                stats.presentation_epoch_out_of_order_callbacks,
+            renderer_histogram_percentile(
+                stats.presentation_epoch_gap_histogram, 50),
+            renderer_histogram_percentile(
+                stats.presentation_epoch_gap_histogram, 95),
+            renderer_histogram_percentile(
+                stats.presentation_epoch_gap_histogram, 99),
+            stats.presentation_epoch_gap_ms_max,
             (unsigned long long)gpuErrorFrames,
             (unsigned long long)droppedFrames,
             (unsigned long long)stats.inflight_frames_max,
@@ -1814,6 +3164,16 @@ int main(int argc, const char *argv[]) {
             percentile(packetTimes, timingCount, 95),
             percentile(packetTimes, timingCount, 99),
             packetMax,
+            receiveOverlapEnabled ? "true" : "false",
+            (unsigned long long)receivePrefetchPackets,
+            (unsigned long long)receivePrefetchAborts,
+            primaryPayloadHighWater,
+            secondaryPayloadHighWater,
+            receivePrefetchPackets
+                ? receivePrefetchWaitTotalMS /
+                    (double)receivePrefetchPackets
+                : 0.0,
+            receivePrefetchWaitMaxMS,
             percentile(completionGaps, gapCount, 50),
             percentile(completionGaps, gapCount, 95),
             percentile(completionGaps, gapCount, 99),
@@ -1826,15 +3186,36 @@ int main(int argc, const char *argv[]) {
             (unsigned long long)dpcmTextureViewCreations,
             (double)stats.dpcm_upload_capacity_bytes / (1024.0 * 1024.0),
             (double)stats.dpcm_decoded_capacity_bytes / (1024.0 * 1024.0));
+        printf(
+            "TB_PROTOCOL_METAL metalAllocatedMiB=%.2f "
+            "metalAllocatedDeltaMiB=%+.2f metalRecommendedMiB=%.2f\n",
+            (double)stats.device_current_allocated_bytes /
+                (1024.0 * 1024.0),
+            (double)metalAllocatedDeltaBytes / (1024.0 * 1024.0),
+            (double)stats.device_recommended_working_set_bytes /
+                (1024.0 * 1024.0));
         fflush(stdout);
         receiver_diagnostic(
             ok ? OS_LOG_TYPE_DEFAULT : OS_LOG_TYPE_ERROR,
-            "session=%s received=%u dpcm=%u malformed=%u "
+            "session=%s reason=%s socketErrno=%d packetLength=%u "
+            "packetType=0x%02x received=%u dpcm=%u malformed=%u "
             "queueDrops=%u gpuDrops=%llu "
             "rendererFailures=%u fps=%.3f payloadGbps=%.3f "
+            "presented=%llu presentationDrops=%llu presentedFPS=%.3f "
+            "presentationDrainTimedOut=%s presentationInvariant=%s "
+            "presentCallbacksOutOfOrder=%llu presentGapP95MS=%.3f "
+            "presentGapP99MS=%.3f presentGapMaxMS=%.3f "
+            "receiveOverlap=%s prefetchPackets=%llu prefetchAborts=%llu "
+            "primaryPayloadHighWater=%zu secondaryPayloadHighWater=%zu "
+            "prefetchWaitAvgMS=%.3f prefetchWaitMaxMS=%.3f "
             "dpcmUploadAllocs=%llu dpcmDecodedAllocs=%llu "
             "dpcmTextureViews=%llu dpcmUploadMiB=%.2f dpcmDecodedMiB=%.2f",
             ok ? "ended" : "failed",
+            tb_shutdown_gate_is_requested(shutdownGate)
+                ? "shutdown-requested" : sessionEndReason,
+            sessionEndErrno,
+            sessionEndPacketLength,
+            sessionEndPacketType,
             receivedFrames,
             dpcmFrames,
             malformedFrames,
@@ -1845,33 +3226,54 @@ int main(int argc, const char *argv[]) {
             elapsed > 0.0
                 ? (double)payloadBytes * 8.0 / elapsed / 1e9
                 : 0.0,
+            (unsigned long long)presentedFrames,
+            (unsigned long long)presentationDroppedFrames,
+            presentedFPS,
+            presentationDrainTimedOut ? "true" : "false",
+            presentationInvariantViolation ? "failed" : "ok",
+            (unsigned long long)
+                stats.presentation_epoch_out_of_order_callbacks,
+            renderer_histogram_percentile(
+                stats.presentation_epoch_gap_histogram, 95),
+            renderer_histogram_percentile(
+                stats.presentation_epoch_gap_histogram, 99),
+            stats.presentation_epoch_gap_ms_max,
+            receiveOverlapEnabled ? "true" : "false",
+            (unsigned long long)receivePrefetchPackets,
+            (unsigned long long)receivePrefetchAborts,
+            primaryPayloadHighWater,
+            secondaryPayloadHighWater,
+            receivePrefetchPackets
+                ? receivePrefetchWaitTotalMS /
+                    (double)receivePrefetchPackets
+                : 0.0,
+            receivePrefetchWaitMaxMS,
             (unsigned long long)dpcmUploadAllocations,
             (unsigned long long)dpcmDecodedAllocations,
             (unsigned long long)dpcmTextureViewCreations,
             (double)stats.dpcm_upload_capacity_bytes / (1024.0 * 1024.0),
             (double)stats.dpcm_decoded_capacity_bytes / (1024.0 * 1024.0));
+        receiver_diagnostic(
+            OS_LOG_TYPE_DEFAULT,
+            "session=metal-memory allocatedMiB=%.2f deltaMiB=%+.2f "
+            "recommendedMiB=%.2f",
+            (double)stats.device_current_allocated_bytes /
+                (1024.0 * 1024.0),
+            (double)metalAllocatedDeltaBytes / (1024.0 * 1024.0),
+            (double)stats.device_recommended_working_set_bytes /
+                (1024.0 * 1024.0));
 
         tb_shutdown_gate_close_peer(shutdownGate, &peer);
         dispatch_sync(dispatch_get_main_queue(), ^{
-            if (localCursorHidden) {
-                const CGError cursorResult =
-                    CGDisplayShowCursor(selectedDisplayID);
-                if (cursorResult == kCGErrorSuccess) {
-                    localCursorHidden = false;
-                    receiver_diagnostic(
-                        OS_LOG_TYPE_DEFAULT,
-                        "session=ended localCursor=restored display=%u",
-                        (unsigned int)selectedDisplayID);
-                } else {
-                    receiver_diagnostic(
-                        OS_LOG_TYPE_ERROR,
-                        "session=ended localCursor=restore-failed error=%d",
-                        (int)cursorResult);
-                }
-            }
+            presentationController.streamActive = NO;
+            (void)restore_global_cursor(
+                selectedDisplayID,
+                &localCursorHidden,
+                "session=ended");
+            surfaceView.suppressLocalCursor = NO;
         });
-        // Keep the panel awake until the display-specific cursor hide has been
-        // balanced. If the display is reconfiguring, retain the flag so the
+        // Keep the panel awake until the process-global cursor hide has been
+        // balanced. If Core Graphics rejects Show, retain the flag so the
         // final cleanup (or the next disconnect) retries the restore.
         tb_power_lifecycle_end_session(&powerLifecycle);
         exitCode = processFatal ? 76 : (ok ? 0 : 2);
@@ -1930,9 +3332,12 @@ int main(int argc, const char *argv[]) {
                 runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
         }
         if (dispatch_group_wait(transportGroup, DISPATCH_TIME_NOW) != 0) {
+            surfaceView.suppressLocalCursor = NO;
             if (localCursorHidden) {
-                (void)CGDisplayShowCursor(selectedDisplayID);
-                localCursorHidden = false;
+                (void)restore_global_cursor(
+                    selectedDisplayID,
+                    &localCursorHidden,
+                    "transport-drain-timeout");
             }
             receiver_diagnostic(
                 OS_LOG_TYPE_FAULT,
@@ -1945,20 +3350,13 @@ int main(int argc, const char *argv[]) {
         }
 
         if (localCursorHidden) {
-            const CGError cursorResult = CGDisplayShowCursor(selectedDisplayID);
-            if (cursorResult == kCGErrorSuccess) {
-                localCursorHidden = false;
-                receiver_diagnostic(
-                    OS_LOG_TYPE_DEFAULT,
-                    "shutdown localCursor=restored display=%u",
-                    (unsigned int)selectedDisplayID);
-            } else {
-                receiver_diagnostic(
-                    OS_LOG_TYPE_ERROR,
-                    "shutdown localCursor=restore-failed error=%d",
-                    (int)cursorResult);
-            }
+            (void)restore_global_cursor(
+                selectedDisplayID,
+                &localCursorHidden,
+                "shutdown");
         }
+        surfaceView.suppressLocalCursor = NO;
+        presentationController.streamActive = NO;
 
         const int requestedSignal =
             tb_shutdown_gate_requested_signal(shutdownGate);
@@ -1970,9 +3368,12 @@ int main(int argc, const char *argv[]) {
         tb_power_lifecycle_stop(&powerLifecycle);
         free(completionGaps);
         free(packetTimes);
+        free(payloadSecondary);
         free(payload);
         tb_native_metal_destroy(renderer);
         [presentationController invalidate];
+        pthread_mutex_destroy(&lifecycleSnapshot->lock);
+        free(lifecycleSnapshot);
         NSApp.delegate = nil;
         [window close];
         if (requestedSignal != 0) {

@@ -35,6 +35,13 @@ jobs:
           ./scripts/build_targetbridge_sender_app.sh
           file ../build/TargetBridge.app/Contents/MacOS/TargetBridge | grep -q "${{ matrix.arch }}"
 
+      - name: Test Appliance Installer Lifecycle
+        run: |
+          TargetBridge-Sender/tests/test_appliance_installer_contract.zsh \
+            TargetBridge-Sender/scripts/install_targetbridge_5k_sender_launch_agent.sh
+          TargetBridge-Sender/tests/test_sleep_preference_lifecycle.zsh
+          /bin/zsh TargetBridge-Sender/tests/test_display_lifecycle_protocol.zsh
+
       - name: Run Sender Unit Tests
         run: |
           cd TargetBridge-Sender
@@ -66,6 +73,12 @@ jobs:
         run: |
           cd TargetBridge-Receiver/TBReceiverC
           make test
+
+      - name: Build 5K Appliance Receiver
+        run: |
+          cd TargetBridge-Receiver/TBReceiverC
+          make benchmark_targetbridge_raw_receiver_universal
+          file benchmark_targetbridge_raw_receiver_universal | grep -q "${{ matrix.arch }}"
 
       - name: Build Receiver App
         run: |

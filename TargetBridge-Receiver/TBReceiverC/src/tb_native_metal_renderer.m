@@ -10,7 +10,22 @@
 #import <simd/simd.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+/* A monitor should synchronize presentation to scanout by default. The
+ * explicit override exists only for controlled latency/tearing A/B runs;
+ * arbitrary or missing values retain the tear-free production policy. Keep
+ * parsing separate from getenv so the production default is unit-testable. */
+static BOOL tb_native_metal_display_sync_enabled_for_value(
+    const char *value) {
+    return !(value && strcmp(value, "0") == 0);
+}
+
+static BOOL tb_native_metal_display_sync_enabled(void) {
+    return tb_native_metal_display_sync_enabled_for_value(
+        getenv("TB_DISPLAY_SYNC"));
+}
 
 static size_t tb_native_metal_timing_bucket(double milliseconds) {
     if (milliseconds <= 0.0) return 0;
@@ -18,6 +33,21 @@ static size_t tb_native_metal_timing_bucket(double milliseconds) {
     return bucket < TB_NATIVE_METAL_TIMING_BUCKETS
         ? bucket
         : TB_NATIVE_METAL_TIMING_BUCKETS - 1;
+}
+
+int tb_native_metal_presentation_resolution_state(uint64_t submitted,
+                                                   uint64_t presented,
+                                                   uint64_t dropped) {
+    if (presented > UINT64_MAX - dropped) {
+        return TB_NATIVE_METAL_PRESENTATION_INVARIANT;
+    }
+    const uint64_t resolved = presented + dropped;
+    if (resolved > submitted) {
+        return TB_NATIVE_METAL_PRESENTATION_INVARIANT;
+    }
+    return resolved == submitted
+        ? TB_NATIVE_METAL_PRESENTATION_DRAINED
+        : TB_NATIVE_METAL_PRESENTATION_PENDING;
 }
 
 #define TB_NATIVE_METAL_TEARDOWN_TIMEOUT_NSEC (2ull * NSEC_PER_SEC)
@@ -375,14 +405,17 @@ size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
           cursorType:(int)cursorType
          cursorLarge:(BOOL)cursorLarge;
 - (void)copyStats:(struct tb_native_metal_stats *)stats;
+- (void)copyRuntimeStats:(struct tb_native_metal_stats *)stats;
 - (const char *)colorSpaceName;
 - (BOOL)isRenderAdmissionClosed;
 - (BOOL)hasTerminalGPUError;
 - (int)claimInflightSlotForRender;
 - (void)recordCommandCompletionFailed:(BOOL)gpuFailed
                        gpuMilliseconds:(double)gpuMilliseconds;
+- (uint64_t)startNewPresentationEpoch;
 - (uint64_t)currentPresentationEpoch;
-- (void)recordDrawablePresentedForEpoch:(uint64_t)epoch;
+- (void)recordDrawablePresentedForEpoch:(uint64_t)epoch
+                                  atTime:(double)presentedTime;
 - (BOOL)isTeardownQuarantined;
 - (void)beginTeardown;
 - (BOOL)waitUntilIdleWithTimeoutNanos:(uint64_t)timeoutNanos;
@@ -415,6 +448,8 @@ size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
     size_t _rawPoolHeight;
     TBNativeMetalView *_view;
     CAMetalLayer *_metalLayer;
+    NSRect _cachedViewBounds;
+    CGFloat _cachedBackingScale;
     CGColorSpaceRef _layerColorSpace;
     dispatch_semaphore_t _inflightSemaphore;
     CVPixelBufferRef _latestFrame;
@@ -639,15 +674,18 @@ size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
     if ([_metalLayer respondsToSelector:@selector(setMaximumDrawableCount:)]) {
         _metalLayer.maximumDrawableCount = 3;
     }
+    const BOOL displaySyncEnabled = tb_native_metal_display_sync_enabled();
     if ([_metalLayer respondsToSelector:@selector(setDisplaySyncEnabled:)]) {
-        _metalLayer.displaySyncEnabled = NO;
+        _metalLayer.displaySyncEnabled = displaySyncEnabled;
     }
     fprintf(stderr,
-            "[metal-native] attached window=%ld points=%.0fx%.0f scale=%.1f title=%s\n",
+            "[metal-native] attached window=%ld points=%.0fx%.0f scale=%.1f "
+            "displaySync=%s title=%s\n",
             (long)window.windowNumber,
             contentView.bounds.size.width,
             contentView.bounds.size.height,
             window.backingScaleFactor,
+            displaySyncEnabled ? "on" : "off",
             window.title.UTF8String ?: "");
     return YES;
 }
@@ -675,10 +713,20 @@ size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
 
 - (void)updateDrawableSize {
     if (!_view || !_metalLayer) return;
+    const NSRect viewBounds = _view.bounds;
+    const CGFloat backingScale = _view.window.backingScaleFactor;
+    if (NSEqualRects(viewBounds, _cachedViewBounds) &&
+        backingScale == _cachedBackingScale &&
+        _metalLayer.drawableSize.width > 0.0 &&
+        _metalLayer.drawableSize.height > 0.0) {
+        return;
+    }
     NSRect backingBounds = [_view convertRectToBacking:_view.bounds];
     const CGSize size = CGSizeMake(MAX(1.0, backingBounds.size.width),
                                    MAX(1.0, backingBounds.size.height));
-    _metalLayer.contentsScale = _view.window.backingScaleFactor;
+    _cachedViewBounds = viewBounds;
+    _cachedBackingScale = backingScale;
+    _metalLayer.contentsScale = backingScale;
     if (!CGSizeEqualToSize(_metalLayer.drawableSize, size)) {
         _metalLayer.drawableSize = size;
         fprintf(stderr, "[metal-native] drawable %.0fx%.0f\n", size.width, size.height);
@@ -710,9 +758,22 @@ size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
     /* The dedicated receiver keeps an opaque AppKit cover above this view.
      * Leaving Metal drawable avoids nextDrawable starvation on a hidden layer. */
     _view.hidden = NO;
+    return [self startNewPresentationEpoch];
+}
+
+- (uint64_t)startNewPresentationEpoch {
     os_unfair_lock_lock(&_statsLock);
     _stats.presentation_epoch++;
     if (_stats.presentation_epoch == 0) _stats.presentation_epoch++;
+    _stats.presentation_epoch_presented_frames = 0;
+    _stats.presentation_epoch_dropped_frames = 0;
+    _stats.presentation_epoch_out_of_order_callbacks = 0;
+    _stats.presentation_epoch_first_time = 0.0;
+    _stats.presentation_epoch_last_time = 0.0;
+    _stats.presentation_epoch_gap_ms_max = 0.0;
+    memset(_stats.presentation_epoch_gap_histogram,
+           0,
+           sizeof(_stats.presentation_epoch_gap_histogram));
     const uint64_t epoch = _stats.presentation_epoch;
     os_unfair_lock_unlock(&_statsLock);
     return epoch;
@@ -787,11 +848,52 @@ size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
     return epoch;
 }
 
-- (void)recordDrawablePresentedForEpoch:(uint64_t)epoch {
+- (void)recordDrawablePresentedForEpoch:(uint64_t)epoch
+                                  atTime:(double)presentedTime {
+    /* MTLDrawable.presentedTime is the hardware presentation timestamp. The
+     * callback itself can run later or be batched. Apple defines zero as a
+     * drawable that was not presented, so substituting callback time would
+     * turn a real display drop into a false success. */
+    if (!(presentedTime > 0.0) || !isfinite(presentedTime)) {
+        os_unfair_lock_lock(&_statsLock);
+        _stats.presentation_dropped_frames++;
+        if (epoch == _stats.presentation_epoch) {
+            _stats.presentation_epoch_dropped_frames++;
+        }
+        os_unfair_lock_unlock(&_statsLock);
+        return;
+    }
     os_unfair_lock_lock(&_statsLock);
     _stats.presented_frames++;
     if (epoch > _stats.last_presented_epoch) {
         _stats.last_presented_epoch = epoch;
+    }
+    if (epoch == _stats.presentation_epoch) {
+        if (_stats.presentation_epoch_presented_frames == 0) {
+            _stats.presentation_epoch_first_time = presentedTime;
+            _stats.presentation_epoch_last_time = presentedTime;
+        } else if (presentedTime >
+                   _stats.presentation_epoch_last_time) {
+            const double gapMS =
+                (presentedTime - _stats.presentation_epoch_last_time) *
+                1000.0;
+            _stats.presentation_epoch_gap_histogram[
+                tb_native_metal_timing_bucket(gapMS)]++;
+            if (gapMS > _stats.presentation_epoch_gap_ms_max) {
+                _stats.presentation_epoch_gap_ms_max = gapMS;
+            }
+            _stats.presentation_epoch_last_time = presentedTime;
+        } else {
+            /* Keep the measured time range monotonic if callback delivery is
+             * reordered. The late sample remains counted, but cannot safely
+             * contribute an adjacent-gap observation without buffering an
+             * unbounded session history. */
+            _stats.presentation_epoch_out_of_order_callbacks++;
+            if (presentedTime < _stats.presentation_epoch_first_time) {
+                _stats.presentation_epoch_first_time = presentedTime;
+            }
+        }
+        _stats.presentation_epoch_presented_frames++;
     }
     os_unfair_lock_unlock(&_statsLock);
 }
@@ -1029,8 +1131,8 @@ size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
         const uint64_t presentationEpoch = [self currentPresentationEpoch];
         __weak TBNativeMetalRenderer *weakSelf = self;
         [drawable addPresentedHandler:^(id<MTLDrawable> presentedDrawable) {
-            (void)presentedDrawable;
-            [weakSelf recordDrawablePresentedForEpoch:presentationEpoch];
+            [weakSelf recordDrawablePresentedForEpoch:presentationEpoch
+                                               atTime:presentedDrawable.presentedTime];
         }];
         [commandBuffer presentDrawable:drawable];
 
@@ -1370,8 +1472,8 @@ size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
         const uint64_t presentationEpoch = [self currentPresentationEpoch];
         __weak TBNativeMetalRenderer *weakSelf = self;
         [drawable addPresentedHandler:^(id<MTLDrawable> presentedDrawable) {
-            (void)presentedDrawable;
-            [weakSelf recordDrawablePresentedForEpoch:presentationEpoch];
+            [weakSelf recordDrawablePresentedForEpoch:presentationEpoch
+                                               atTime:presentedDrawable.presentedTime];
         }];
         [commandBuffer presentDrawable:drawable];
 
@@ -1457,6 +1559,18 @@ size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
 }
 
 - (void)copyStats:(struct tb_native_metal_stats *)stats {
+    if (!stats) return;
+    const uint64_t deviceCurrent = (uint64_t)_device.currentAllocatedSize;
+    const uint64_t deviceRecommended =
+        (uint64_t)_device.recommendedMaxWorkingSetSize;
+    os_unfair_lock_lock(&_statsLock);
+    *stats = _stats;
+    os_unfair_lock_unlock(&_statsLock);
+    stats->device_current_allocated_bytes = deviceCurrent;
+    stats->device_recommended_working_set_bytes = deviceRecommended;
+}
+
+- (void)copyRuntimeStats:(struct tb_native_metal_stats *)stats {
     if (!stats) return;
     os_unfair_lock_lock(&_statsLock);
     *stats = _stats;
@@ -1710,6 +1824,17 @@ void tb_native_metal_get_stats(void *renderer,
     }
 }
 
+void tb_native_metal_get_runtime_stats(
+    void *renderer,
+    struct tb_native_metal_stats *stats) {
+    if (!stats) return;
+    memset(stats, 0, sizeof(*stats));
+    if (!renderer) return;
+    @autoreleasepool {
+        [(__bridge TBNativeMetalRenderer *)renderer copyRuntimeStats:stats];
+    }
+}
+
 const char *tb_native_metal_pixel_buffer_color_space(void *pixel_buffer) {
     return tb_pixel_buffer_uses_display_p3((CVPixelBufferRef)pixel_buffer)
         ? "Display P3"
@@ -1780,5 +1905,28 @@ int tb_native_metal_test_is_quarantined(void *renderer) {
         return [(__bridge TBNativeMetalRenderer *)renderer
             isTeardownQuarantined] ? 1 : 0;
     }
+}
+
+uint64_t tb_native_metal_test_begin_presentation_epoch(void *renderer) {
+    if (!renderer) return 0;
+    @autoreleasepool {
+        return [(__bridge TBNativeMetalRenderer *)renderer
+            startNewPresentationEpoch];
+    }
+}
+
+void tb_native_metal_test_record_presented_time(void *renderer,
+                                                uint64_t epoch,
+                                                double presented_time) {
+    if (!renderer) return;
+    @autoreleasepool {
+        [(__bridge TBNativeMetalRenderer *)renderer
+            recordDrawablePresentedForEpoch:epoch
+                                      atTime:presented_time];
+    }
+}
+
+int tb_native_metal_test_display_sync_enabled_for_value(const char *value) {
+    return tb_native_metal_display_sync_enabled_for_value(value) ? 1 : 0;
 }
 #endif

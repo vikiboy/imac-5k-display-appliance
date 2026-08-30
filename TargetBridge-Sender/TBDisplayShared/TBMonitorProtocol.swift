@@ -21,6 +21,12 @@ enum TBMonitorPacketType: UInt8 {
     case volume = 0x37
     /// Night Shift / True Tone on the receiver's panel.
     case displayTweaks = 0x38
+    /// Receiver -> sender: whether the receiver currently owns a usable Aqua
+    /// presentation surface. Optional capability; older peers skip it.
+    case receiverSurfaceState = 0x39
+    /// Sender -> receiver: public NSWorkspace source display sleep/wake state.
+    /// The epoch makes duplicate and delayed transitions harmless.
+    case sourceDisplayState = 0x3A
     case testData = 0x40
 }
 
@@ -49,6 +55,9 @@ struct TBMonitorDisplayProfile: Codable {
     /// Whether the receiver built a GPU decoder for whole-frame TBD2 blobs.
     /// Absent means unsupported, preserving compatibility with older receivers.
     var supportsDPCM: Bool?
+    /// Whether the peer understands the explicit display-power/session control
+    /// plane. Absent means legacy behavior, preserving old receiver support.
+    var supportsDisplayLifecycle: Bool?
     var inputMonitoringTrusted: Bool?
     var accessibilityTrusted: Bool?
     /// Optional so older receivers still decode; absent means "cannot".
@@ -68,6 +77,68 @@ struct TBMonitorUILanguageUpdate: Codable {
 
 struct TBMonitorHeartbeat: Codable {
     var sequence: UInt64
+}
+
+struct TBMonitorReceiverSurfaceState: Codable, Equatable {
+    var available: Bool
+    var epoch: UInt64
+}
+
+struct TBMonitorSourceDisplayState: Codable, Equatable {
+    var awake: Bool
+    var epoch: UInt64
+    /// Echoes the most recent receiver surface epoch. Because this packet and
+    /// subsequent frames share the sender->receiver ordered byte stream, it is
+    /// also the cross-direction barrier that keeps pre-pause frames from being
+    /// mistaken for a fresh post-unlock frame.
+    var receiverEpoch: UInt64?
+}
+
+/// A tiny pure reducer shared by production code and protocol tests. Epochs
+/// are strictly increasing; same-epoch retransmits are idempotent and a stale
+/// packet can never reverse a newer decision.
+struct TBMonotonicBooleanState: Equatable {
+    enum Update: Equatable {
+        case applied
+        case duplicate
+        case stale
+    }
+
+    private(set) var value: Bool
+    private(set) var epoch: UInt64
+
+    init(value: Bool, epoch: UInt64 = 0) {
+        self.value = value
+        self.epoch = epoch
+    }
+
+    mutating func apply(value newValue: Bool, epoch newEpoch: UInt64) -> Update {
+        guard newEpoch > epoch else {
+            return newEpoch == epoch && newValue == value ? .duplicate : .stale
+        }
+        value = newValue
+        epoch = newEpoch
+        return .applied
+    }
+}
+
+enum TBDisplayLifecyclePolicy {
+    static func shouldProduceFrames(sourceAwake: Bool,
+                                    receiverSurfaceAvailable: Bool,
+                                    peerSupportsLifecycle: Bool) -> Bool {
+        // A legacy receiver has no control plane with which to blank its last
+        // frame. Preserve the pre-extension behavior instead of pausing the
+        // sender and stranding stale pixels indefinitely.
+        guard peerSupportsLifecycle else { return true }
+        return sourceAwake && receiverSurfaceAvailable
+    }
+
+    static func shouldApplySourceTransition(awake: Bool,
+                                            autoRestartOnWake: Bool) -> Bool {
+        // Sleep must always close the privacy/resource gate. The preference
+        // controls only whether a later wake reopens it automatically.
+        return !awake || autoRestartOnWake
+    }
 }
 
 struct TBMonitorTeardown: Codable {

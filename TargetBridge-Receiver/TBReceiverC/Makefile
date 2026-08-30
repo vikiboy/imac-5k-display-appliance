@@ -65,7 +65,7 @@ tb_dpcm.o: $(CODEC)/tb_dpcm.c $(CODEC)/tb_dpcm.h
 	$(CC) $(CFLAGS) -I$(CODEC) -c -o $@ $<
 
 clean:
-	rm -f $(OBJ) tb_dpcm_native.o tb_dpcm_universal.o $(BIN) $(TEST_BIN) $(TEST_DPCM_BIN) $(TEST_DPCM_GPU_BIN) $(TEST_INPUT_QUEUE_BIN) $(TEST_RECEIVER_PROFILE_BIN) $(TEST_RENDERER_POLICY_BIN) $(TEST_RAW_NV12_BIN) $(TEST_PRE_SESSION_BIN) $(TEST_SHUTDOWN_GATE_BIN) $(TEST_NATIVE_METAL_BIN) $(TEST_APPKIT_LAUNCH_BIN) $(BENCH_NATIVE_METAL_BIN) $(BENCH_NATIVE_METAL_UNIVERSAL_BIN) $(BENCH_NETWORK_METAL_UNIVERSAL_BIN) $(BENCH_PROTOCOL_METAL_UNIVERSAL_BIN) $(BENCH_TB_LINK_UNIVERSAL_BIN) $(BENCH_OPENGL_BIN)
+	rm -f $(OBJ) tb_dpcm_native.o tb_dpcm_universal.o $(BIN) $(TEST_BIN) $(TEST_DPCM_BIN) $(TEST_DPCM_GPU_BIN) $(TEST_INPUT_QUEUE_BIN) $(TEST_RECEIVER_PROFILE_BIN) $(TEST_RENDERER_POLICY_BIN) $(TEST_RAW_NV12_BIN) $(TEST_PRE_SESSION_BIN) $(TEST_SHUTDOWN_GATE_BIN) $(TEST_APPLIANCE_SURFACE_POLICY_BIN) $(TEST_DISPLAY_LIFECYCLE_BIN) $(TEST_POWER_LIFECYCLE_BIN) $(TEST_NATIVE_METAL_BIN) $(TEST_APPKIT_LAUNCH_BIN) $(TEST_CURSOR_SHIELD_BIN) $(TEST_CONSOLE_SESSION_LOCK_BIN) $(BENCH_NATIVE_METAL_BIN) $(BENCH_NATIVE_METAL_UNIVERSAL_BIN) $(BENCH_NETWORK_METAL_UNIVERSAL_BIN) $(BENCH_PROTOCOL_METAL_UNIVERSAL_BIN) $(BENCH_TB_LINK_UNIVERSAL_BIN) $(BENCH_OPENGL_BIN)
 
 # Unit tests for the packet parser and wire codec. Both are pure C, so these
 # need no ffmpeg/SDL/pkgconf and run anywhere, including CI, without hardware.
@@ -83,8 +83,13 @@ TEST_RENDERER_POLICY_BIN = test_renderer_policy
 TEST_RAW_NV12_BIN = test_raw_nv12
 TEST_PRE_SESSION_BIN = test_pre_session
 TEST_SHUTDOWN_GATE_BIN = test_shutdown_gate
+TEST_APPLIANCE_SURFACE_POLICY_BIN = test_appliance_surface_policy
+TEST_DISPLAY_LIFECYCLE_BIN = test_display_lifecycle
+TEST_POWER_LIFECYCLE_BIN = test_power_lifecycle
 TEST_NATIVE_METAL_BIN = test_native_metal_renderer
 TEST_APPKIT_LAUNCH_BIN = test_appkit_launch_lifecycle
+TEST_CURSOR_SHIELD_BIN = test_cursor_shield_view
+TEST_CONSOLE_SESSION_LOCK_BIN = test_console_session_lock
 BENCH_NATIVE_METAL_BIN = benchmark_native_metal_renderer
 BENCH_NATIVE_METAL_UNIVERSAL_BIN = benchmark_native_metal_renderer_universal
 BENCH_NETWORK_METAL_UNIVERSAL_BIN = benchmark_network_metal_receiver_universal
@@ -93,7 +98,7 @@ BENCH_TB_LINK_UNIVERSAL_BIN = benchmark_tb_link_universal
 BENCH_OPENGL_BIN = benchmark_sdl_opengl_renderer
 TEST_PLATFORM_BINS =
 ifeq ($(UNAME_S),Darwin)
-TEST_PLATFORM_BINS += $(TEST_DPCM_GPU_BIN) $(TEST_NATIVE_METAL_BIN) $(TEST_APPKIT_LAUNCH_BIN)
+TEST_PLATFORM_BINS += $(TEST_DPCM_GPU_BIN) $(TEST_NATIVE_METAL_BIN) $(TEST_APPKIT_LAUNCH_BIN) $(TEST_CURSOR_SHIELD_BIN) $(TEST_POWER_LIFECYCLE_BIN) $(TEST_CONSOLE_SESSION_LOCK_BIN)
 endif
 
 tb_dpcm_native.o: $(CODEC)/tb_dpcm.c $(CODEC)/tb_dpcm.h
@@ -116,6 +121,16 @@ $(TEST_DPCM_GPU_BIN): tests/test_dpcm_gpu_lifecycle.m $(CODEC)/tb_dpcm_gpu.m $(C
 
 $(TEST_INPUT_QUEUE_BIN): tests/test_input_queue.c src/input_queue.c src/input_queue.h
 	$(CC) $(TEST_CFLAGS) -Isrc tests/test_input_queue.c src/input_queue.c -o $@
+
+$(TEST_APPLIANCE_SURFACE_POLICY_BIN): tests/test_appliance_surface_policy.c src/tb_appliance_surface_policy.c src/tb_appliance_surface_policy.h
+	$(CC) $(TEST_CFLAGS) -Isrc tests/test_appliance_surface_policy.c src/tb_appliance_surface_policy.c -o $@
+
+$(TEST_DISPLAY_LIFECYCLE_BIN): tests/test_display_lifecycle.c src/tb_display_lifecycle.c src/tb_display_lifecycle.h
+	$(CC) $(TEST_CFLAGS) -Werror -Isrc tests/test_display_lifecycle.c src/tb_display_lifecycle.c -o $@
+
+$(TEST_POWER_LIFECYCLE_BIN): tests/test_power_lifecycle.c src/tb_power_lifecycle.c src/tb_power_lifecycle.h
+	$(CC) $(TEST_CFLAGS) -Werror -Isrc tests/test_power_lifecycle.c src/tb_power_lifecycle.c \
+		-framework CoreFoundation -o $@
 
 $(TEST_RECEIVER_PROFILE_BIN): tests/test_receiver_profile.c src/receiver_profile.c src/receiver_profile.h
 	$(CC) $(TEST_CFLAGS) -Isrc tests/test_receiver_profile.c src/receiver_profile.c -o $@
@@ -141,6 +156,16 @@ $(TEST_APPKIT_LAUNCH_BIN): tests/test_appkit_launch_lifecycle.m
 	$(CC) -O2 -g -Wall -Wextra -Werror -fobjc-arc \
 		tests/test_appkit_launch_lifecycle.m -framework AppKit -o $@
 
+$(TEST_CURSOR_SHIELD_BIN): tests/test_cursor_shield_view.m src/tb_cursor_shield_view.m src/tb_cursor_shield_view.h
+	$(CC) -O2 -g -Wall -Wextra -Werror -fobjc-arc -Isrc \
+		tests/test_cursor_shield_view.m src/tb_cursor_shield_view.m \
+		-framework AppKit -o $@
+
+$(TEST_CONSOLE_SESSION_LOCK_BIN): tests/test_console_session_lock.c src/tb_console_session_lock.c src/tb_console_session_lock.h
+	$(CC) $(TEST_CFLAGS) -Werror -Isrc \
+		tests/test_console_session_lock.c src/tb_console_session_lock.c \
+		-framework CoreFoundation -framework IOKit -o $@
+
 $(BENCH_NATIVE_METAL_BIN): benchmarks/benchmark_native_metal_renderer.m src/tb_native_metal_renderer.m src/tb_native_metal_renderer.h src/renderer_policy.c src/renderer_policy.h tb_dpcm_native.o
 	$(CC) -O2 -g -Wall -Wextra -Isrc -I$(CODEC) -std=c++17 -x objective-c++ -fobjc-arc \
 		benchmarks/benchmark_native_metal_renderer.m src/tb_native_metal_renderer.m src/renderer_policy.c -x none tb_dpcm_native.o \
@@ -164,10 +189,10 @@ $(BENCH_NETWORK_METAL_UNIVERSAL_BIN): benchmarks/benchmark_network_metal_receive
 		benchmarks/benchmark_network_metal_receiver.m src/tb_native_metal_renderer.m -x none tb_dpcm_universal.o \
 		-framework AppKit -framework CoreVideo -framework IOSurface -framework Metal -framework QuartzCore -lc++ -o $@
 
-$(BENCH_PROTOCOL_METAL_UNIVERSAL_BIN): benchmarks/benchmark_targetbridge_raw_receiver.m src/raw_nv12.c src/raw_nv12.h src/tb_native_metal_renderer.m src/tb_native_metal_renderer.h src/tb_power_lifecycle.c src/tb_power_lifecycle.h src/tb_pre_session.c src/tb_pre_session.h src/tb_shutdown_gate.c src/tb_shutdown_gate.h tb_dpcm_universal.o
+$(BENCH_PROTOCOL_METAL_UNIVERSAL_BIN): benchmarks/benchmark_targetbridge_raw_receiver.m src/raw_nv12.c src/raw_nv12.h src/tb_appliance_surface_policy.c src/tb_appliance_surface_policy.h src/tb_console_session_lock.c src/tb_console_session_lock.h src/tb_cursor_shield_view.m src/tb_cursor_shield_view.h src/tb_display_lifecycle.c src/tb_display_lifecycle.h src/tb_native_metal_renderer.m src/tb_native_metal_renderer.h src/tb_power_lifecycle.c src/tb_power_lifecycle.h src/tb_pre_session.c src/tb_pre_session.h src/tb_shutdown_gate.c src/tb_shutdown_gate.h tb_dpcm_universal.o
 	$(CC) -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
 		-O2 -g -Wall -Wextra -Werror -Isrc -I$(CODEC) -std=c++17 -x objective-c++ -fobjc-arc \
-		benchmarks/benchmark_targetbridge_raw_receiver.m src/raw_nv12.c src/tb_native_metal_renderer.m src/tb_power_lifecycle.c src/tb_pre_session.c src/tb_shutdown_gate.c -x none tb_dpcm_universal.o \
+		benchmarks/benchmark_targetbridge_raw_receiver.m src/raw_nv12.c src/tb_appliance_surface_policy.c src/tb_console_session_lock.c src/tb_cursor_shield_view.m src/tb_display_lifecycle.c src/tb_native_metal_renderer.m src/tb_power_lifecycle.c src/tb_pre_session.c src/tb_shutdown_gate.c -x none tb_dpcm_universal.o \
 		-framework AppKit -framework CoreVideo -framework IOSurface -framework IOKit -framework Metal -framework QuartzCore -framework SystemConfiguration -lc++ -o $@
 
 $(BENCH_TB_LINK_UNIVERSAL_BIN): benchmark_tb_link.c
@@ -186,7 +211,7 @@ $(BENCH_OPENGL_BIN): benchmarks/benchmark_sdl_opengl_renderer.c
 benchmark-opengl: $(BENCH_OPENGL_BIN)
 	./$(BENCH_OPENGL_BIN)
 
-test: $(TEST_BIN) $(TEST_DPCM_BIN) $(TEST_INPUT_QUEUE_BIN) $(TEST_RECEIVER_PROFILE_BIN) $(TEST_RENDERER_POLICY_BIN) $(TEST_RAW_NV12_BIN) $(TEST_PRE_SESSION_BIN) $(TEST_SHUTDOWN_GATE_BIN) $(TEST_PLATFORM_BINS)
+test: $(TEST_BIN) $(TEST_DPCM_BIN) $(TEST_INPUT_QUEUE_BIN) $(TEST_RECEIVER_PROFILE_BIN) $(TEST_RENDERER_POLICY_BIN) $(TEST_RAW_NV12_BIN) $(TEST_PRE_SESSION_BIN) $(TEST_SHUTDOWN_GATE_BIN) $(TEST_APPLIANCE_SURFACE_POLICY_BIN) $(TEST_DISPLAY_LIFECYCLE_BIN) $(TEST_PLATFORM_BINS)
 	./$(TEST_BIN)
 	./$(TEST_DPCM_BIN)
 	./$(TEST_INPUT_QUEUE_BIN)
@@ -195,12 +220,23 @@ test: $(TEST_BIN) $(TEST_DPCM_BIN) $(TEST_INPUT_QUEUE_BIN) $(TEST_RECEIVER_PROFI
 	./$(TEST_RAW_NV12_BIN)
 	./$(TEST_PRE_SESSION_BIN)
 	./$(TEST_SHUTDOWN_GATE_BIN)
+	./$(TEST_APPLIANCE_SURFACE_POLICY_BIN)
+	./$(TEST_DISPLAY_LIFECYCLE_BIN)
 	/bin/zsh tests/test_receiver_installer_order.zsh ../scripts/install_targetbridge_5k_receiver_launch_agent.sh
+	/bin/zsh tests/test_receiver_screensaver_preferences.zsh ../scripts/install_targetbridge_5k_receiver_launch_agent.sh ../scripts/uninstall_targetbridge_5k_receiver_launch_agent.sh
 	/bin/zsh tests/test_appkit_launch_contract.zsh benchmarks/benchmark_targetbridge_raw_receiver.m
+	/bin/zsh tests/test_display_session_activity_contract.zsh src/tb_power_lifecycle.c benchmarks/benchmark_targetbridge_raw_receiver.m
+	/bin/zsh tests/test_display_lifecycle_contract.zsh benchmarks/benchmark_targetbridge_raw_receiver.m ../../TargetBridge-Sender/TBDisplaySender/TBDisplaySenderService.swift ../../TargetBridge-Sender/TBDisplayShared/TBMonitorProtocol.swift
+	/bin/zsh tests/test_persistent_timing_contract.zsh benchmarks/benchmark_targetbridge_raw_receiver.m
+	/bin/zsh tests/test_receive_overlap_contract.zsh benchmarks/benchmark_targetbridge_raw_receiver.m
+	/bin/zsh tests/test_cursor_shield_contract.zsh benchmarks/benchmark_targetbridge_raw_receiver.m src/tb_cursor_shield_view.m src/tb_cursor_shield_view.h
 ifeq ($(UNAME_S),Darwin)
 	./$(TEST_DPCM_GPU_BIN)
 	./$(TEST_NATIVE_METAL_BIN)
 	./$(TEST_APPKIT_LAUNCH_BIN)
+	./$(TEST_CURSOR_SHIELD_BIN)
+	./$(TEST_POWER_LIFECYCLE_BIN)
+	./$(TEST_CONSOLE_SESSION_LOCK_BIN)
 endif
 
 .PHONY: all clean test benchmark-metal benchmark-metal-universal benchmark-network-metal-universal benchmark-opengl

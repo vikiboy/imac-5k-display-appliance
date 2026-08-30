@@ -23,4 +23,24 @@ if /usr/bin/grep -Fq '[window makeKeyAndOrderFront:nil]' "$SOURCE_PATH"; then
   exit 1
 fi
 
+if /usr/bin/grep -Fq 'NSApplicationActivationPolicyAccessory' "$SOURCE_PATH"; then
+  print -u2 'FAIL appkit_launch_contract receiver must not fall back to UIElement/accessory policy'
+  exit 1
+fi
+
+if ! /usr/bin/grep -Fq 'NSApplicationActivationPolicyRegular' "$SOURCE_PATH"; then
+  print -u2 'FAIL appkit_launch_contract regular foreground policy is missing'
+  exit 1
+fi
+
+if ! /usr/bin/grep -Fq 'appkit=launch-contract-failed' "$SOURCE_PATH"; then
+  print -u2 'FAIL appkit_launch_contract foreground policy failure must fail closed'
+  exit 1
+fi
+
+if ! /usr/bin/grep -Fq 'appkit=activation-deferred reason=gui-session-unavailable' "$SOURCE_PATH"; then
+  print -u2 'FAIL appkit_launch_contract launch while locked must not steal the secure surface'
+  exit 1
+fi
+
 print 'PASS appkit_launch_contract single launch owner'

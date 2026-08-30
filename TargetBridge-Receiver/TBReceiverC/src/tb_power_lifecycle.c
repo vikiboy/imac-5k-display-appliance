@@ -3,6 +3,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -27,17 +28,22 @@ static void tb_power_log_error_once(struct tb_power_lifecycle *lifecycle,
             (unsigned int)result);
 }
 
-static void tb_power_release(struct tb_power_lifecycle *lifecycle,
+static bool tb_power_release(struct tb_power_lifecycle *lifecycle,
                              uint32_t *storedID,
                              uint32_t errorBit,
                              const char *operation) {
-    if (!lifecycle || !storedID || *storedID == kIOPMNullAssertionID) return;
+    if (!lifecycle || !storedID) return false;
+    if (*storedID == kIOPMNullAssertionID) return true;
     const IOPMAssertionID assertionID = (IOPMAssertionID)*storedID;
-    *storedID = kIOPMNullAssertionID;
     const IOReturn result = IOPMAssertionRelease(assertionID);
     if (result != kIOReturnSuccess) {
+        /* Keep the ID live so a later teardown can retry. Forgetting it here
+         * could leave a process-owned assertion active indefinitely. */
         tb_power_log_error_once(lifecycle, errorBit, operation, result);
+        return false;
     }
+    *storedID = kIOPMNullAssertionID;
+    return true;
 }
 
 int tb_power_lifecycle_start(struct tb_power_lifecycle *lifecycle) {
@@ -78,6 +84,11 @@ int tb_power_lifecycle_begin_session(struct tb_power_lifecycle *lifecycle) {
     /* A previous partially closed session must not leak an assertion into the
      * next connection. Both release helpers are idempotent. */
     tb_power_lifecycle_end_session(lifecycle);
+    if (lifecycle->display_sleep_assertion != kIOPMNullAssertionID ||
+        lifecycle->user_activity_assertion != kIOPMNullAssertionID) {
+        /* Fail closed instead of overwriting an ID whose release failed. */
+        return -1;
+    }
 
     IOPMAssertionID displayAssertion = kIOPMNullAssertionID;
     IOReturn result = IOPMAssertionCreateWithName(
@@ -95,11 +106,17 @@ int tb_power_lifecycle_begin_session(struct tb_power_lifecycle *lifecycle) {
         return -1;
     }
 
-    IOPMAssertionID activityAssertion = kIOPMNullAssertionID;
+    /* This is a one-shot remote wake signal. The display assertion above owns
+     * the long-lived awake state; repeating DeclareUserActivity on every
+     * heartbeat is redundant and can cause framework allocation churn. */
+    IOPMAssertionID activityAssertion =
+        kIOPMNullAssertionID;
     result = IOPMAssertionDeclareUserActivity(
-        CFSTR("TargetBridge display session connected"),
-        kIOPMUserActiveLocal,
+        CFSTR("TargetBridge display session active"),
+        kIOPMUserActiveRemote,
         &activityAssertion);
+    /* Retain even an unexpectedly populated failure result so rollback can
+     * release every ID returned by IOKit. */
     lifecycle->user_activity_assertion = (uint32_t)activityAssertion;
     if (result != kIOReturnSuccess ||
         activityAssertion == kIOPMNullAssertionID) {

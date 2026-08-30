@@ -19,12 +19,20 @@ extern "C" {
  * should close the current session and retry without changing capabilities. */
 #define TB_NATIVE_METAL_RENDER_TRANSIENT_RETRY (-2)
 
+#define TB_NATIVE_METAL_PRESENTATION_PENDING 0
+#define TB_NATIVE_METAL_PRESENTATION_DRAINED 1
+#define TB_NATIVE_METAL_PRESENTATION_INVARIANT (-1)
+
 struct tb_native_metal_stats {
     uint64_t submitted_frames;
     uint64_t completed_frames;
     uint64_t presented_frames;
+    uint64_t presentation_dropped_frames;
     uint64_t presentation_epoch;
     uint64_t last_presented_epoch;
+    uint64_t presentation_epoch_presented_frames;
+    uint64_t presentation_epoch_dropped_frames;
+    uint64_t presentation_epoch_out_of_order_callbacks;
     uint64_t gpu_error_frames;
     uint64_t dropped_frames;
     uint64_t drawable_requests;
@@ -33,6 +41,8 @@ struct tb_native_metal_stats {
     uint64_t dpcm_upload_buffer_allocations;
     uint64_t dpcm_decoded_buffer_allocations;
     uint64_t dpcm_texture_view_creations;
+    uint64_t device_current_allocated_bytes;
+    uint64_t device_recommended_working_set_bytes;
     uint64_t dpcm_upload_capacity_bytes;
     uint64_t dpcm_decoded_capacity_bytes;
     uint64_t inflight_frames;
@@ -45,10 +55,15 @@ struct tb_native_metal_stats {
     double   submit_time_ms_max;
     double   raw_copy_time_ms_total;
     double   raw_copy_time_ms_max;
+    double   presentation_epoch_first_time;
+    double   presentation_epoch_last_time;
+    double   presentation_epoch_gap_ms_max;
     uint64_t gpu_time_histogram[TB_NATIVE_METAL_TIMING_BUCKETS];
     uint64_t drawable_wait_histogram[TB_NATIVE_METAL_TIMING_BUCKETS];
     uint64_t submit_time_histogram[TB_NATIVE_METAL_TIMING_BUCKETS];
     uint64_t raw_copy_time_histogram[TB_NATIVE_METAL_TIMING_BUCKETS];
+    uint64_t presentation_epoch_gap_histogram[
+        TB_NATIVE_METAL_TIMING_BUCKETS];
 };
 
 /* Allocation policy used by the three DPCM upload-ring slots. Existing
@@ -58,6 +73,13 @@ struct tb_native_metal_stats {
 size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
                                                   size_t required,
                                                   size_t limit);
+
+/* Classifies presentation-callback accounting without conflating a resolved
+ * dropped drawable with a successful presentation. More resolved callbacks
+ * than submitted drawables is an invariant violation, including overflow. */
+int tb_native_metal_presentation_resolution_state(uint64_t submitted,
+                                                   uint64_t presented,
+                                                   uint64_t dropped);
 
 void *tb_native_metal_create(void);
 void  tb_native_metal_destroy(void *renderer);
@@ -132,6 +154,10 @@ int tb_native_metal_render_cursor(void *renderer,
 
 void tb_native_metal_get_stats(void *renderer,
                                struct tb_native_metal_stats *stats);
+/* Hot-path snapshot that copies renderer-owned counters only. Unlike the full
+ * accessor above, this does not ask the Metal device for memory properties. */
+void tb_native_metal_get_runtime_stats(void *renderer,
+                                       struct tb_native_metal_stats *stats);
 
 /* Color diagnostics. The renderer tags its CAMetalLayer as Display P3 only
  * when the decoded CVPixelBuffer carries P3-D65 primaries; all other and
@@ -154,6 +180,11 @@ int tb_native_metal_test_release_inflight_slot(void *renderer);
 int tb_native_metal_test_drain_with_timeout(void *renderer,
                                             uint64_t timeout_nanoseconds);
 int tb_native_metal_test_is_quarantined(void *renderer);
+uint64_t tb_native_metal_test_begin_presentation_epoch(void *renderer);
+void tb_native_metal_test_record_presented_time(void *renderer,
+                                                uint64_t epoch,
+                                                double presented_time);
+int tb_native_metal_test_display_sync_enabled_for_value(const char *value);
 #endif
 
 #ifdef __cplusplus

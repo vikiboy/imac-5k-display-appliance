@@ -21,7 +21,9 @@ struct tb_power_lifecycle {
  * the iMac panel free to follow the user's display-sleep timer between clients. */
 int tb_power_lifecycle_start(struct tb_power_lifecycle *lifecycle);
 
-/* Wake the local panel and keep it awake for one accepted display session. */
+/* Wake the local panel once and keep it awake for one accepted display
+ * session. The display assertion, not repeated synthetic activity, owns the
+ * long-lived awake state. */
 int tb_power_lifecycle_begin_session(struct tb_power_lifecycle *lifecycle);
 
 /* Re-enable display idle sleep without releasing the appliance-wide system

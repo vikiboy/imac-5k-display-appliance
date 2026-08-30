@@ -36,6 +36,10 @@
  * type 0x35 = brightness update (JSON)
  * type 0x36 = clipboard update (JSON)
  * type 0x37 = volume update (JSON)
+ * type 0x39 = receiver surface state (JSON {"available":bool,"epoch":uint64})
+ * type 0x3A = source display state
+ *   (JSON {"awake":bool,"epoch":uint64,"receiverEpoch":uint64})
+ *   receiverEpoch is an ordered sender->receiver acknowledgement/barrier.
  *
  * Compatible with the new TBDisplaySender Swift app.
  */
@@ -67,6 +71,8 @@
  * Both are private CoreBrightness features, so the receiver reports whether it
  * can honour them in its display profile. */
 #define TB_PKT_DISPLAY_TWEAKS   0x38
+#define TB_PKT_RECEIVER_SURFACE_STATE 0x39
+#define TB_PKT_SOURCE_DISPLAY_STATE 0x3A
 #define TB_PKT_TEST_DATA        0x40
 
 #define TB_HDR_BYTES        5   /* 4 length + 1 type */

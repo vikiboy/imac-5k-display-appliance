@@ -21,6 +21,7 @@ cp "$SOURCE_BINARY" "$APP_DIR/Contents/MacOS/$EXECUTABLE_NAME"
 chmod 0755 "$APP_DIR/Contents/MacOS/$EXECUTABLE_NAME"
 mkdir -p "$APP_DIR/Contents/Resources/Legal"
 cp "$REPO_ROOT/LICENSE" "$APP_DIR/Contents/Resources/Legal/LICENSE.txt"
+cp "$REPO_ROOT/LICENSE" "$APP_DIR/Contents/Resources/Legal/LICENSE"
 cp "$REPO_ROOT/NOTICE.md" "$APP_DIR/Contents/Resources/Legal/NOTICE.md"
 
 mkdir -p "$ICON_WORK/TargetBridge5KReceiver.iconset"
@@ -59,13 +60,17 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2</string>
+    <string>0.9</string>
     <key>CFBundleVersion</key>
-    <string>2</string>
+    <string>16</string>
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
+    <key>LSBackgroundOnly</key>
+    <false/>
     <key>LSMultipleInstancesProhibited</key>
     <true/>
+    <key>LSUIElement</key>
+    <false/>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>

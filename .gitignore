@@ -9,6 +9,10 @@ build/
 xcuserdata/
 *.xcuserstate
 
+# The bounded resource collector writes an atomic, mode-0600 temporary file
+# beside its final TSV. Never stage an interrupted soak as evidence.
+docs/repro/imac-2017-5K/results/*.tsv.tmp.*
+
 # macOS app bundles produced locally
 *.app
 *.zip
@@ -27,6 +31,12 @@ tbreceiver
 /TargetBridge-Receiver/TBReceiverC/test_raw_nv12
 /TargetBridge-Receiver/TBReceiverC/test_raw_nv12_sanitized
 /TargetBridge-Receiver/TBReceiverC/test_native_metal_renderer
+/TargetBridge-Receiver/TBReceiverC/test_appkit_launch_lifecycle
+/TargetBridge-Receiver/TBReceiverC/test_cursor_shield_view
+/TargetBridge-Receiver/TBReceiverC/test_appliance_surface_policy
+/TargetBridge-Receiver/TBReceiverC/test_console_session_lock
+/TargetBridge-Receiver/TBReceiverC/test_display_lifecycle
+/TargetBridge-Receiver/TBReceiverC/test_power_lifecycle
 /TargetBridge-Receiver/TBReceiverC/test_pre_session
 /TargetBridge-Receiver/TBReceiverC/test_shutdown_gate
 
