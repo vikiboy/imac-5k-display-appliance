@@ -25,16 +25,21 @@ export HOME="${test_root}/home"
 export TB_FAKE_DEFAULTS_STATE_DIR="${test_root}/defaults"
 export TB_DEFAULTS_BIN="$fake_defaults"
 export TB_LAUNCHCTL_BIN="$fake_launchctl"
+export TB_CODESIGN_BIN="/usr/bin/true"
 
 app_path="${HOME}/Applications/TargetBridge 5K Sender.app"
 executable_path="${app_path}/Contents/MacOS/TargetBridge"
 mkdir -p "${executable_path:h}" "$TB_FAKE_DEFAULTS_STATE_DIR"
-touch "$executable_path"
-chmod +x "$executable_path"
+cp /bin/sleep "$executable_path"
+info_plist="${app_path}/Contents/Info.plist"
+plutil -create xml1 "$info_plist"
+plutil -insert CFBundleIdentifier -string com.targetbridge.sender "$info_plist"
+plutil -insert CFBundleExecutable -string TargetBridge "$info_plist"
 
 domain="com.targetbridge.sender"
 key="fd.tbdisplaysender.preventDisplaySleep"
 backup="${HOME}/Library/Application Support/TargetBridge/Sender/prevent-display-sleep.original"
+plist_path="${HOME}/Library/LaunchAgents/com.targetbridge.sender5k.plist"
 
 read_pref() {
   "$fake_defaults" read "$domain" "$key"
@@ -49,13 +54,26 @@ run_install() {
   "$installer" "$app_path" >/dev/null
 }
 run_uninstall() {
-  "$uninstaller" >/dev/null
+  "$uninstaller" "$app_path" >/dev/null
 }
 
 # An absent original is represented explicitly, survives reinstall, and is
 # restored as absence only when the appliance-owned false value is unchanged.
 run_install
 [[ "$(<"$backup")" == absent && "$(read_pref)" == 0 ]] || exit 1
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$plist_path")" == /bin/zsh ]] || exit 1
+wrapper_guard="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:2' "$plist_path")"
+[[ "$wrapper_guard" == '[[ -e "$1" ]] || exit 0; shift; exec "$@"' ]] || exit 1
+guard_fixture="${test_root}/guard-enabled"
+if ! /bin/zsh -c "$wrapper_guard" imac5k-test "$guard_fixture" /usr/bin/false; then
+  print -u2 -- "absent marker did not suppress speculative launch"
+  exit 1
+fi
+touch "$guard_fixture"
+if /bin/zsh -c "$wrapper_guard" imac5k-test "$guard_fixture" /usr/bin/false; then
+  print -u2 -- "present marker did not execute wrapped command"
+  exit 1
+fi
 run_install
 [[ "$(<"$backup")" == absent && "$(read_pref)" == 0 ]] || exit 1
 run_uninstall
@@ -94,6 +112,50 @@ if run_install 2>/dev/null; then exit 1; fi
 [[ "$(read_pref)" == 1 && "$(<"$backup")" == corrupt ]] || exit 1
 if run_uninstall 2>/dev/null; then exit 1; fi
 [[ "$(read_pref)" == 1 && "$(<"$backup")" == corrupt ]] || exit 1
+
+# Disabling monitor mode must terminate the exact installed sender process,
+# not merely launchd's waiting `open -W` parent. A backup/checkout is outside
+# this exact-path contract and is left alone.
+/bin/unlink "$backup"
+write_pref 0
+run_install
+"$executable_path" 600 &
+sender_pid=$!
+for _ in {1..20}; do
+  /bin/kill -0 "$sender_pid" 2>/dev/null && break
+  /bin/sleep 0.05
+done
+/bin/kill -0 "$sender_pid"
+run_uninstall
+if /bin/kill -0 "$sender_pid" 2>/dev/null; then
+  print -u2 -- "sender uninstaller left exact installed app running"
+  exit 1
+fi
+wait "$sender_pid" 2>/dev/null || true
+
+# An ambiguous bootstrap failure must stop the exact app, restore the
+# pre-install preference, and remove
+# every fresh appliance artifact instead of leaving a half-enabled setup.
+write_pref 1
+export TB_FAKE_LAUNCHCTL_FAIL_OPERATION=bootstrap
+export TB_FAKE_LAUNCHCTL_START_PATH_ON_FAILURE="$executable_path"
+export TB_FAKE_LAUNCHCTL_PID_PATH="${test_root}/ambiguous-bootstrap.pid"
+if run_install 2>/dev/null; then
+  print -u2 -- "sender installer unexpectedly succeeded during injected bootstrap failure"
+  exit 1
+fi
+ambiguous_pid="$(<"$TB_FAKE_LAUNCHCTL_PID_PATH")"
+unset TB_FAKE_LAUNCHCTL_FAIL_OPERATION
+unset TB_FAKE_LAUNCHCTL_START_PATH_ON_FAILURE
+unset TB_FAKE_LAUNCHCTL_PID_PATH
+enabled_path="${HOME}/Library/Application Support/TargetBridge/Sender/enabled"
+[[ "$(read_pref)" == 1 ]] || exit 1
+[[ ! -e "$plist_path" && ! -e "$enabled_path" && ! -e "$backup" ]] || exit 1
+if /bin/kill -0 "$ambiguous_pid" 2>/dev/null; then
+  print -u2 -- "failed install rollback left an ambiguously launched sender running"
+  exit 1
+fi
+wait "$ambiguous_pid" 2>/dev/null || true
 
 /bin/zsh -n "$installer" "$uninstaller" "$fake_defaults" "$fake_launchctl"
 print -- "sender display-sleep preference lifecycle passed"

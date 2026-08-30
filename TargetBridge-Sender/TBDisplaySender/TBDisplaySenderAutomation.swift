@@ -133,6 +133,23 @@ enum TBSenderAutomation {
     // MARK: - Dispatch
 
     private static func run(action: String, params: [String: String]) {
+        if action == "connect",
+           flagEnabled(params["require-enabled-marker"] ?? params["requireEnabledMarker"]),
+           !monitorModeLaunchAllowed(
+               enabledMarkerExists: FileManager.default.fileExists(
+                   atPath: senderEnabledFlagURL().path
+               )
+           ) {
+            // KeepAlive can cause one speculative launch even when its PathState
+            // is false. Exit before permission preflight/request or connection
+            // work so Stop and a suspended TCC setup remain authoritative.
+            NSLog("[automation] monitor mode marker absent; ignoring speculative launch")
+            continuousConnectTask?.cancel()
+            continuousConnectTask = nil
+            NSApp.terminate(nil)
+            return
+        }
+
         switch action {
         case "connect":
             continuousConnectTask?.cancel()
@@ -514,6 +531,10 @@ enum TBSenderAutomation {
         screenCaptureGranted: Bool
     ) -> ContinuousConnectPermissionAction {
         screenCaptureGranted ? .startRetryLoop : .requestOnceAndSuspend
+    }
+
+    static func monitorModeLaunchAllowed(enabledMarkerExists: Bool) -> Bool {
+        enabledMarkerExists
     }
 
     /// Short failures back off enough to avoid repeatedly rebuilding capture

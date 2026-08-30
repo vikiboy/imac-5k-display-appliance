@@ -371,6 +371,11 @@ final class TBSenderAutomationParsingTests: XCTestCase {
         )
     }
 
+    func testMonitorModeLaunchRequiresPersistedEnabledMarker() {
+        XCTAssertTrue(TBSenderAutomation.monitorModeLaunchAllowed(enabledMarkerExists: true))
+        XCTAssertFalse(TBSenderAutomation.monitorModeLaunchAllowed(enabledMarkerExists: false))
+    }
+
     func testPinnedConnectionPathsDoNotRunThroughputProbeOnEveryReconnect() {
         for preference in [
             TBConnectionPathPreference.thunderbolt,
