@@ -789,12 +789,38 @@ int main(int argc, const char *argv[]) {
         NSApp.presentationOptions =
             NSApplicationPresentationHideDock |
             NSApplicationPresentationHideMenuBar;
+
+        /* Acquire the appliance-wide system assertion before display
+         * discovery. If launchd restarts us while the panel is asleep, waking
+         * and polling first avoids an EX_UNAVAILABLE restart loop in which no
+         * process remains alive long enough to keep the iMac reachable. */
+        __block struct tb_power_lifecycle powerLifecycle;
+        if (tb_power_lifecycle_start(&powerLifecycle) != 0 ||
+            tb_power_lifecycle_begin_session(&powerLifecycle) != 0) {
+            tb_power_lifecycle_stop(&powerLifecycle);
+            fprintf(stderr,
+                    "TB_PROTOCOL_METAL result=failed "
+                    "reason=startup-power-lifecycle\n");
+            return 72;
+        }
         CGDirectDisplayID selectedDisplayID = kCGNullDirectDisplay;
-        NSScreen *screen = native_builtin_5k_screen(&selectedDisplayID);
+        NSScreen *screen = nil;
+        const CFTimeInterval panelWakeDeadline =
+            CACurrentMediaTime() + 8.0;
+        do {
+            screen = native_builtin_5k_screen(&selectedDisplayID);
+            if (screen) break;
+            [[NSRunLoop currentRunLoop]
+                runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+        } while (CACurrentMediaTime() < panelWakeDeadline);
+        /* Waiting should follow the user's ordinary display-sleep preference.
+         * A real accepted session reacquires these two panel assertions. */
+        tb_power_lifecycle_end_session(&powerLifecycle);
         if (!screen || !MTLCreateSystemDefaultDevice()) {
             fprintf(stderr,
                     "TB_PROTOCOL_METAL result=failed "
                     "reason=no-active-builtin-native-5k-panel\n");
+            tb_power_lifecycle_stop(&powerLifecycle);
             return 69;
         }
         NSWindow *window = [[NSWindow alloc]
@@ -922,6 +948,7 @@ int main(int argc, const char *argv[]) {
                     "TB_PROTOCOL_METAL result=failed "
                     "reason=physical-panel-preflight\n");
             [window close];
+            tb_power_lifecycle_stop(&powerLifecycle);
             return 69;
         }
 
@@ -942,11 +969,12 @@ int main(int argc, const char *argv[]) {
             free(payload);
             if (renderer) tb_native_metal_destroy(renderer);
             [window close];
+            tb_power_lifecycle_stop(&powerLifecycle);
             return 70;
         }
-        /* Arm the reconnect cover before the first Metal view is attached.
-         * Frames can render while held, but the layer becomes visible only
-         * after the receiver observes a successful GPU completion. */
+        /* Hide Metal while idle. Session startup later makes its view drawable
+         * behind the opaque cover and removes that cover only after a drawable
+         * from the current presentation epoch reaches the screen. */
         tb_native_metal_set_visible(renderer, 0);
 
         void (^showIdleState)(NSString *, NSString *) =
@@ -1052,6 +1080,7 @@ int main(int argc, const char *argv[]) {
             free(payload);
             tb_native_metal_destroy(renderer);
             [window close];
+            tb_power_lifecycle_stop(&powerLifecycle);
             signal(SIGTERM, SIG_DFL);
             signal(SIGINT, SIG_DFL);
             return 78;
@@ -1074,26 +1103,10 @@ int main(int argc, const char *argv[]) {
             free(payload);
             tb_native_metal_destroy(renderer);
             [window close];
+            tb_power_lifecycle_stop(&powerLifecycle);
             signal(SIGTERM, SIG_DFL);
             signal(SIGINT, SIG_DFL);
             return 78;
-        }
-        __block struct tb_power_lifecycle powerLifecycle;
-        if (tb_power_lifecycle_start(&powerLifecycle) != 0) {
-            fprintf(stderr,
-                    "TB_PROTOCOL_METAL result=failed reason=power-lifecycle-start\n");
-            dispatch_source_cancel(sigtermSource);
-            dispatch_source_cancel(sigintSource);
-            tb_shutdown_gate_close_listener(shutdownGate, &listener);
-            /* Signal handlers retain shutdownGate until process exit. */
-            free(completionGaps);
-            free(packetTimes);
-            free(payload);
-            tb_native_metal_destroy(renderer);
-            [window close];
-            signal(SIGTERM, SIG_DFL);
-            signal(SIGINT, SIG_DFL);
-            return 72;
         }
         const bool supportsDPCM = tb_native_metal_supports_dpcm(renderer) != 0;
         TBBonjourPublisher *bonjour = [[TBBonjourPublisher alloc]

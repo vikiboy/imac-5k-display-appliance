@@ -36,7 +36,7 @@ a claim of literal zero latency.
 | Lossless 4:4:4 TBD2/DPCM path | Implemented; CPU/GPU suites pass |
 | Native Metal 2017-iMac receiver | Implemented; lifecycle fixture passes |
 | Native macOS display arrangement | Working alongside the Dell and built-in display |
-| Automatic login/reconnect | Implemented; final unplug/sleep acceptance pending |
+| Automatic login/reconnect | Startup panel-wake race fixed; final unplug/sleep acceptance pending |
 | Receiver idle experience | Dark native waiting surface, truthful connection states, and idle-only controls |
 | RAM, storage, file-descriptor, and thermal soak | Final post-fix one-hour run pending |
 | Public release | None; the GitHub repository remains private |

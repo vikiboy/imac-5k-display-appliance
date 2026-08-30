@@ -104,6 +104,9 @@ This branch also adds hardening that was not present in that form in the draft:
 - a quiet native waiting surface with distinct detected, starting, interrupted,
   and rejected states plus idle-only About/Quit controls; it has no animation,
   polling timer, or idle Metal workload;
+- startup sequencing that acquires the system-sleep assertion first, declares
+  local user activity, and waits briefly for an asleep built-in panel before
+  enforcing the native-5K gate, avoiding a launchd restart/sleep loop;
 - a presentation-epoch gate that keeps the waiting surface over a drawable
   Metal layer until macOS confirms a frame from the current connection was
   actually presented, preventing a stale desktop flash during reconnect;
