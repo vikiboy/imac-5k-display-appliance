@@ -324,7 +324,9 @@ The DPCM hot path writes no frames to disk. The sender input-debug log is capped
 at 1 MiB plus one rotated 1 MiB generation. The receiver launch agent does not
 append stdout/stderr to permanent files.
 
-## Current component result
+## Current results
 
 See [`results/2026-08-29-component-tests.md`](results/2026-08-29-component-tests.md).
-This is deliberately separate from the pending iMac end-to-end result.
+The incremental physical-iMac evidence is recorded separately in
+[`results/2026-08-29-imac-runtime-acceptance.md`](results/2026-08-29-imac-runtime-acceptance.md).
+Neither file substitutes for the pending active 5K60 and one-hour-soak result.

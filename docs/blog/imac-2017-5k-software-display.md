@@ -194,6 +194,7 @@ The current commands and sanitized component-result summaries live under
 | AppKit launch lifecycle | Passed | One launch completion; borderless idle controls can become key without reconnect focus stealing |
 | Native Metal fixture | 192 frames passed | Real GPU pipelines, stable 3/1/1 DPCM reuse, and presentation-epoch handoff |
 | 2017 iMac idle baseline | 7/7 stable samples | 0.0% CPU, 16,336 KiB RSS, 11 FDs, and no app-log/support growth over 60 seconds |
+| Receiver start with panel asleep | Passed | One restart woke the panel, reaccepted native 5K, restored the on-screen appliance window, and listened without an AppKit exception |
 | Virtual display probe | **pending recorded rerun** | Must show 2560 × 1440 points → 5120 × 2880 pixels on the sender |
 | iMac end-to-end DPCM | **pending** | Required before any production claim |
 | Soak/reconnect/resources | **pending** | Required before any production claim |
