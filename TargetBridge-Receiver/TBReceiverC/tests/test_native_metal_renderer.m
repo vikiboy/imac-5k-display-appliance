@@ -11,6 +11,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+static int headless_presentation_mode(void) {
+    const char *value = getenv("TB_TEST_HEADLESS_PRESENTATION");
+    return value && strcmp(value, "1") == 0;
+}
+
 static int wait_for_completions(void *renderer, uint64_t target) {
     const CFTimeInterval deadline = CACurrentMediaTime() + 3.0;
     struct tb_native_metal_stats stats;
@@ -494,11 +499,13 @@ static int exercise_raw_staging(void *renderer) {
              wait_for_completions(
                  renderer,
                  baseline.completed_frames +
-                     (uint64_t)presentationSubmissions) &&
-             wait_for_presentation_callbacks(
-                 renderer,
-                 presentationEpoch,
-                 (uint64_t)presentationSubmissions);
+                     (uint64_t)presentationSubmissions);
+        if (ok && !headless_presentation_mode()) {
+            ok = wait_for_presentation_callbacks(
+                renderer,
+                presentationEpoch,
+                (uint64_t)presentationSubmissions);
+        }
         if (!ok) {
             fprintf(stderr,
                     "native Metal renderer test: covered first frames failed "
@@ -525,14 +532,22 @@ static int exercise_raw_staging(void *renderer) {
                 afterFirst.last_presented_epoch < presentationEpoch &&
                 afterFirst.presentation_epoch_first_time == 0.0 &&
                 afterFirst.presentation_epoch_last_time == 0.0;
+        const int presentationCallbacksComplete =
+            epochPresented + epochDropped ==
+                (uint64_t)presentationSubmissions;
+        const int presentationCallbacksBounded =
+            epochPresented + epochDropped <=
+                (uint64_t)presentationSubmissions;
         ok = afterFirst.raw_copy_samples ==
                  baseline.raw_copy_samples +
                      (uint64_t)presentationSubmissions &&
              afterFirst.submitted_frames ==
                  baseline.submitted_frames +
                      (uint64_t)presentationSubmissions &&
-             epochPresented + epochDropped ==
-                 (uint64_t)presentationSubmissions &&
+             afterFirst.presentation_epoch == presentationEpoch &&
+             (headless_presentation_mode()
+                  ? presentationCallbacksBounded
+                  : presentationCallbacksComplete) &&
              afterFirst.presentation_dropped_frames -
                      baseline.presentation_dropped_frames == epochDropped &&
              presentationStateValid;
@@ -648,6 +663,10 @@ static int exercise_raw_staging(void *renderer) {
 
 int main(void) {
     @autoreleasepool {
+        if (headless_presentation_mode()) {
+            printf("native Metal renderer test: headless CI mode; hardware "
+                   "presentation callbacks are not a release gate\n");
+        }
         if (!exercise_dpcm_upload_growth_policy()) return 1;
         if (!exercise_dpcm_decoded_size_cap()) return 1;
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();

@@ -74,7 +74,10 @@ jobs:
       - name: Run Receiver Parser Tests
         run: |
           cd TargetBridge-Receiver/TBReceiverC
-          make test
+          # Hosted macOS runners expose a virtual GPU but are not physical
+          # scanout/cadence evidence. Keep all GPU work and accounting checks;
+          # reserve complete drawable-callback gates for real hardware.
+          TB_TEST_HEADLESS_PRESENTATION=1 make test
 
       - name: Build 5K Appliance Receiver
         run: |
