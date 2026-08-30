@@ -78,7 +78,10 @@ after transient startup, cable or Receiver failures. An explicit GUI Stop, Comma
 Quit from the menu bar cancels that loop and removes
 `~/Library/Application Support/TargetBridge/Sender/enabled`. A LaunchAgent can use that
 file as a `PathState` marker so crash recovery remains automatic while a user Stop remains
-stopped. Packaging such a LaunchAgent is intentionally outside this change.
+stopped. The dedicated 2017-iMac appliance packages that behavior in
+`TargetBridge-Sender/scripts/install_targetbridge_5k_sender_launch_agent.sh`: a
+pre-LaunchServices wrapper and an in-app check both require the marker, while
+installation and removal preserve the prior display-sleep preference.
 
 ## Recipes
 

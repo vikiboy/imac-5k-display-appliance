@@ -159,6 +159,10 @@ This branch also adds hardening that was not present in that form in the draft:
   texture view or retire a slightly larger buffer on every frame;
 - permission preflight that requests Screen Recording once and suspends
   automatic retries when permission is absent;
+- transactional sender installation with a pre-LaunchServices marker gate,
+  exact stable-path launch, exact-process uninstall, and rollback after an
+  ambiguous launchd failure, preventing duplicate virtual displays and repeated
+  permission prompts after monitor mode is stopped;
 - Release builds, bounded debug logs, size-managed unified receiver diagnostics,
   and launchd restart throttling.
 
@@ -233,7 +237,8 @@ The current commands and sanitized component-result summaries live under
 
 | Gate | Current result | What it proves |
 |---|---:|---|
-| Sender unit suite | 133/133 | Protocol framing, automation parsing, profile and discovery behavior |
+| Sender unit suite | 134/134 | Protocol framing, automation parsing, marker gating, profile and discovery behavior |
+| Sender appliance lifecycle fixtures | Passed | Signature/identity validation, single-authority launch, exact-process uninstall, reversible preferences, and ambiguous-bootstrap rollback |
 | Receiver network parser | 73 checks | Bounded packet framing and malformed lengths |
 | TBD2 codec | 290 checks | Exact CPU round-trip and malformed-blob rejection at 8 and 10 bits |
 | DPCM GPU lifecycle | 43 checks | Pre-commit failure cleanup and bounded teardown quarantine |
