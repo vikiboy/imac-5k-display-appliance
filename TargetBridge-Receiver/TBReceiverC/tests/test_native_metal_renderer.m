@@ -32,6 +32,16 @@ static int wait_for_presentation_epoch(void *renderer, uint64_t target) {
         [[NSRunLoop currentRunLoop]
             runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.005]];
     } while (CACurrentMediaTime() < deadline);
+    fprintf(stderr,
+            "native Metal renderer test: presentation timeout "
+            "target=%llu current=%llu last=%llu presented=%llu "
+            "submitted=%llu completed=%llu\n",
+            (unsigned long long)target,
+            (unsigned long long)stats.presentation_epoch,
+            (unsigned long long)stats.last_presented_epoch,
+            (unsigned long long)stats.presented_frames,
+            (unsigned long long)stats.submitted_frames,
+            (unsigned long long)stats.completed_frames);
     return 0;
 }
 
@@ -306,6 +316,9 @@ static int exercise_raw_staging(void *renderer) {
     window.releasedWhenClosed = NO;
     window.alphaValue = 0.02;
     [window orderFront:nil];
+    [window displayIfNeeded];
+    [window.contentView displayIfNeeded];
+    [CATransaction flush];
     [[NSRunLoop currentRunLoop]
         runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
 
@@ -330,26 +343,62 @@ static int exercise_raw_staging(void *renderer) {
 
     struct tb_native_metal_stats baseline;
     tb_native_metal_get_stats(renderer, &baseline);
-    int firstResult = -1;
+    int presentationSubmissions = 0;
     if (ok) {
-        firstResult = tb_native_metal_render_nv12_planes(
-            renderer, y, yStride, uv, uvStride, width, height,
-            10, 20, width, height, 1, 0, 0);
-        /* The renderer must already own its staging copy when this returns. */
+        /* A live sender immediately supplies a bounded run of frames. Exercise
+         * all three drawable/in-flight slots so WindowServer can legally skip
+         * one drawable without making the presentation callback test flaky. */
+        for (int frame = 0; frame < 3; frame++) {
+            const int result = tb_native_metal_render_nv12_planes(
+                renderer, y, yStride, uv, uvStride, width, height,
+                10 + frame, 20 + frame, width, height, 1, 0, 0);
+            if (result != 1) break;
+            presentationSubmissions++;
+        }
+        /* The renderer must already own every staging copy when this returns. */
         memset(y, 0xee, (size_t)yStride * height);
         memset(uv, 0x11, (size_t)uvStride * (height / 2));
-        ok = firstResult == 1 &&
-             wait_for_completions(renderer, baseline.completed_frames + 1) &&
+        ok = presentationSubmissions == 3 &&
+             wait_for_completions(
+                 renderer,
+                 baseline.completed_frames +
+                     (uint64_t)presentationSubmissions) &&
              wait_for_presentation_epoch(renderer, presentationEpoch);
+        if (!ok) {
+            fprintf(stderr,
+                    "native Metal renderer test: covered first frames failed "
+                    "submitted=%d epoch=%llu baselineCompleted=%llu\n",
+                    presentationSubmissions,
+                    (unsigned long long)presentationEpoch,
+                    (unsigned long long)baseline.completed_frames);
+        }
     }
 
     struct tb_native_metal_stats afterFirst;
     tb_native_metal_get_stats(renderer, &afterFirst);
     if (ok) {
-        ok = afterFirst.raw_copy_samples == baseline.raw_copy_samples + 1 &&
-             afterFirst.submitted_frames == baseline.submitted_frames + 1 &&
+        ok = afterFirst.raw_copy_samples ==
+                 baseline.raw_copy_samples +
+                     (uint64_t)presentationSubmissions &&
+             afterFirst.submitted_frames ==
+                 baseline.submitted_frames +
+                     (uint64_t)presentationSubmissions &&
              afterFirst.presented_frames >= baseline.presented_frames + 1 &&
              afterFirst.last_presented_epoch == presentationEpoch;
+        if (!ok) {
+            fprintf(stderr,
+                    "native Metal renderer test: presented accounting mismatch "
+                    "raw=%llu/%llu submitted=%llu/%llu presented=%llu/%llu "
+                    "last=%llu epoch=%llu\n",
+                    (unsigned long long)afterFirst.raw_copy_samples,
+                    (unsigned long long)baseline.raw_copy_samples,
+                    (unsigned long long)afterFirst.submitted_frames,
+                    (unsigned long long)baseline.submitted_frames,
+                    (unsigned long long)afterFirst.presented_frames,
+                    (unsigned long long)baseline.presented_frames,
+                    (unsigned long long)afterFirst.last_presented_epoch,
+                    (unsigned long long)presentationEpoch);
+        }
     }
 
     /* Recreate the pool at another resolution, then return to the original. */

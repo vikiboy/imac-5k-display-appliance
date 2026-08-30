@@ -106,7 +106,8 @@ This branch also adds hardening that was not present in that form in the draft:
   polling timer, or idle Metal workload;
 - startup sequencing that acquires the system-sleep assertion first, declares
   local user activity, and waits briefly for an asleep built-in panel before
-  enforcing the native-5K gate, avoiding a launchd restart/sleep loop;
+  enforcing the native-5K gate; a slow wake retries in-process with bounded
+  backoff and unified diagnostics instead of entering a launchd restart loop;
 - a presentation-epoch gate that keeps the waiting surface over a drawable
   Metal layer until macOS confirms a frame from the current connection was
   actually presented, preventing a stale desktop flash during reconnect;

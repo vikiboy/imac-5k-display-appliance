@@ -795,8 +795,7 @@ int main(int argc, const char *argv[]) {
          * and polling first avoids an EX_UNAVAILABLE restart loop in which no
          * process remains alive long enough to keep the iMac reachable. */
         __block struct tb_power_lifecycle powerLifecycle;
-        if (tb_power_lifecycle_start(&powerLifecycle) != 0 ||
-            tb_power_lifecycle_begin_session(&powerLifecycle) != 0) {
+        if (tb_power_lifecycle_start(&powerLifecycle) != 0) {
             tb_power_lifecycle_stop(&powerLifecycle);
             fprintf(stderr,
                     "TB_PROTOCOL_METAL result=failed "
@@ -805,21 +804,69 @@ int main(int argc, const char *argv[]) {
         }
         CGDirectDisplayID selectedDisplayID = kCGNullDirectDisplay;
         NSScreen *screen = nil;
-        const CFTimeInterval panelWakeDeadline =
-            CACurrentMediaTime() + 8.0;
-        do {
-            screen = native_builtin_5k_screen(&selectedDisplayID);
+        unsigned int panelWakeAttempt = 0;
+        while (!screen) {
+        @autoreleasepool {
+            panelWakeAttempt++;
+            const int wakeResult =
+                tb_power_lifecycle_begin_session(&powerLifecycle);
+            if (wakeResult == 0) {
+                const CFTimeInterval panelWakeDeadline =
+                    CACurrentMediaTime() + 8.0;
+                do {
+                    screen = native_builtin_5k_screen(&selectedDisplayID);
+                    if (screen) break;
+                    [[NSRunLoop currentRunLoop]
+                        runUntilDate:[NSDate
+                            dateWithTimeIntervalSinceNow:0.1]];
+                } while (CACurrentMediaTime() < panelWakeDeadline);
+            }
+
+            /* Between attempts, retain only the inexpensive system assertion.
+             * The display follows its normal sleep preference until the next
+             * bounded wake attempt or an ordinary local wake notification. */
+            tb_power_lifecycle_end_session(&powerLifecycle);
             if (screen) break;
-            [[NSRunLoop currentRunLoop]
-                runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
-        } while (CACurrentMediaTime() < panelWakeDeadline);
-        /* Waiting should follow the user's ordinary display-sleep preference.
-         * A real accepted session reacquires these two panel assertions. */
-        tb_power_lifecycle_end_session(&powerLifecycle);
-        if (!screen || !MTLCreateSystemDefaultDevice()) {
+
+            if (!serveForever) {
+                receiver_diagnostic(
+                    OS_LOG_TYPE_ERROR,
+                    "startup=panel-unavailable mode=bounded attempt=%u "
+                    "wakeResult=%d deadlineSeconds=8",
+                    panelWakeAttempt,
+                    wakeResult);
+                tb_power_lifecycle_stop(&powerLifecycle);
+                fprintf(stderr,
+                        "TB_PROTOCOL_METAL result=failed "
+                        "reason=no-active-builtin-native-5k-panel\n");
+                return 69;
+            }
+
+            const double backoffSeconds = MIN(
+                30.0,
+                2.0 * (double)MIN(panelWakeAttempt, 15u));
+            receiver_diagnostic(
+                wakeResult == 0 ? OS_LOG_TYPE_ERROR : OS_LOG_TYPE_FAULT,
+                "startup=panel-wait attempt=%u wakeResult=%d "
+                "fastPathSeconds=8 backoffSeconds=%.0f",
+                panelWakeAttempt,
+                wakeResult,
+                backoffSeconds);
+            const CFTimeInterval retryDeadline =
+                CACurrentMediaTime() + backoffSeconds;
+            do {
+                [[NSRunLoop currentRunLoop]
+                    runUntilDate:[NSDate
+                        dateWithTimeIntervalSinceNow:0.25]];
+                screen = native_builtin_5k_screen(&selectedDisplayID);
+                if (screen) break;
+            } while (CACurrentMediaTime() < retryDeadline);
+        }
+        }
+        if (!MTLCreateSystemDefaultDevice()) {
             fprintf(stderr,
                     "TB_PROTOCOL_METAL result=failed "
-                    "reason=no-active-builtin-native-5k-panel\n");
+                    "reason=no-metal-device\n");
             tb_power_lifecycle_stop(&powerLifecycle);
             return 69;
         }
