@@ -96,7 +96,8 @@
     } else if (_appKitCursorHidden) {
         [NSCursor unhide];
         _appKitCursorHidden = NO;
-    } else if (!_suppressLocalCursor && NSApp.isActive) {
+    } else if (!_suppressLocalCursor && NSApp.isActive &&
+               self.window.isKeyWindow) {
         [NSCursor.arrowCursor set];
     }
 }

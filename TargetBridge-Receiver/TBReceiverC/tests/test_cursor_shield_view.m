@@ -18,12 +18,18 @@ int main(void) {
                       styleMask:NSWindowStyleMaskBorderless
                         backing:NSBackingStoreBuffered
                           defer:NO];
+        /* Match the appliance window's ARC ownership. NSWindow otherwise
+         * self-releases on close, which double-releases a strong ARC local. */
+        window.releasedWhenClosed = NO;
         NSView *metalPlaceholder = [[NSView alloc] initWithFrame:view.bounds];
         metalPlaceholder.autoresizingMask =
             NSViewWidthSizable | NSViewHeightSizable;
         [view addSubview:metalPlaceholder];
         window.contentView = view;
-        [window makeKeyAndOrderFront:nil];
+        /* Do not make a CI runner's real window/cursor globally active. The
+         * physical key-window path is covered by the source contract and the
+         * hardware acceptance matrix; this unit test proves that an attached
+         * but non-key surface never takes global cursor ownership. */
         view.suppressLocalCursor = YES;
         [window invalidateCursorRectsForView:view];
         [view resetCursorRects];
@@ -45,7 +51,7 @@ int main(void) {
             return 1;
         }
         [window close];
-        printf("cursor shield view test passed (key window, child surface, transparent rect lifecycle)\n");
+        printf("cursor shield view test passed (non-key safety, child surface, transparent rect lifecycle)\n");
         return 0;
     }
 }
