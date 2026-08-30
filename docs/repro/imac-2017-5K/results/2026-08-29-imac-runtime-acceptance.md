@@ -45,6 +45,22 @@ restart loop. The new process acquired its power lifecycle, woke and
 re-enumerated the panel, validated native 5K geometry, and became ready in one
 launch.
 
+## Graceful shutdown and reinstallation
+
+The final installed process was unloaded through the per-user launch agent,
+not force-killed. It exited within the collector's one-second timestamp
+resolution and emitted both required lifecycle records:
+
+```text
+shutdown=requested signal=15 admission=closed
+shutdown=complete signal=15 localCursor=restored power=released metal=teardown-complete
+```
+
+Port 54321 had no listener after shutdown. Reinstalling the existing verified
+app created one new process and one listener; the installed executable hash
+remained unchanged. The fresh launch again accepted the physical 5K gate and
+reported `state=listening` without an AppKit launch/menu exception.
+
 ## Idle resources
 
 The separate raw sample
