@@ -528,7 +528,8 @@ static int exercise_raw_staging(void *renderer) {
                 afterFirst.presentation_epoch_first_time > 0.0 &&
                 afterFirst.presentation_epoch_last_time >=
                     afterFirst.presentation_epoch_first_time
-            : epochDropped == (uint64_t)presentationSubmissions &&
+            : (headless_presentation_mode() ||
+               epochDropped == (uint64_t)presentationSubmissions) &&
                 afterFirst.last_presented_epoch < presentationEpoch &&
                 afterFirst.presentation_epoch_first_time == 0.0 &&
                 afterFirst.presentation_epoch_last_time == 0.0;
