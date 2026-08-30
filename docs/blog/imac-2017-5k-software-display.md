@@ -251,7 +251,7 @@ The current commands and sanitized component-result summaries live under
 | AppKit launch lifecycle | Passed | One launch completion; borderless idle controls can become key without reconnect focus stealing |
 | Native Metal fixture | 192 frames passed | Real GPU pipelines, stable 3/1/1 DPCM reuse, and presentation-epoch handoff |
 | 2017 iMac idle baseline | 7/7 stable samples | 0.0% CPU, 16,336 KiB RSS, 11 FDs, and no app-log/support growth over 60 seconds |
-| Receiver start with panel asleep | Passed | One restart woke the panel, reaccepted native 5K, restored the on-screen appliance window, and listened without an AppKit exception |
+| Receiver start with panel asleep while unlocked | Passed | One restart woke the panel, reaccepted native 5K, restored the on-screen appliance window, and listened without an AppKit exception; an already locked session still requires a normal unlock |
 | Receiver graceful reinstall | Passed | SIGTERM closed admission, restored the cursor, released power/Metal state, and one verified process/listener returned |
 | Retina display geometry | **passed on current setup** | 2560 × 1440 HiDPI points → 5120 × 2880 pixels at 60 Hz |
 | Direct Thunderbolt Bridge | **17.06 Gbit/s** | Application-level TCP throughput on the tested cable/setup |
@@ -262,8 +262,8 @@ The current commands and sanitized component-result summaries live under
 | Installed v0.6/build 10 run | **qualified early failure** | At 1,201 seconds the post-600-second receiver slope was +7.363 MiB/hour; the exact once-per-minute staircase matched a redundant user-activity renewal |
 | Installed v0.7/build 12 diagnostic | **not acceptance evidence** | Confirmed the wake token was not renewed, then isolated lazy page commitment in two first-ten-minute telemetry arrays; `heap`/`vmmap` deliberately perturbed the 540-second run |
 | Installed v0.8/build 13 one-hour run | **qualified failure, completed** | Sender RSS was essentially flat, threads/FDs/disk stayed flat, and no thermal warning appeared; receiver RSS rose +4.819 MiB/hour after 1,200 seconds. The securely locked iMac accepted 215,747 DPCM packets but completed zero presentations, proving that v0.8 kept doing expensive work behind an unavailable surface |
-| v0.9 lifecycle candidate | **component and live control-plane pass; paired stream pending** | Adds explicit receiver-surface/source-display epochs, an ordered acknowledgement barrier, fail-closed capture/GPU/audio pause, lock-aware startup, balanced cursor/power ownership, and fresh-current-generation presentation before unblank. The installed iMac receiver advertised 5120 × 2880, 2560 × 1440 HiDPI, 60 Hz, DPCM, and lifecycle support, then returned to 0% CPU / 12 MiB after the probe |
-| Cursor | **automated contract passed; human pass pending** | An already-locked iMac still requires one physical unlock before cursor acceptance |
+| v0.9 lifecycle candidate | **component and live control-plane pass; paired stream pending** | Adds explicit receiver-surface/source-display epochs, an ordered acknowledgement barrier, fail-closed capture/GPU/audio pause, lock-aware startup, balanced cursor/power ownership, focus-stable live pixels, and fresh-current-generation presentation before unblank. Build 18 verified at 0% CPU / about 18 MiB while securely locked |
+| Cursor | **focus regression fixed; human pass pending** | Build 18 keeps local-cursor suppression across Screen Sharing/system-panel focus changes; an already-locked iMac still requires one physical unlock before visual acceptance |
 | Final qualification | **pending** | Stable sender installation/TCC approval plus paired lock/unlock, sleep/wake, cable reconnect, Dell coexistence, corrected cadence, active-surface RSS, and duplicate-cursor acceptance remain open |
 
 The cadence numbers above came from the actual Radeon Pro 575, but their success

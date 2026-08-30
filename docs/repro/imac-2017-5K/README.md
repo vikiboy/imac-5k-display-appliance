@@ -139,16 +139,16 @@ claimed as working. The appliance launch agent explicitly supplies
 `--large-cursor 0`, so a stale GUI preference cannot accidentally select that
 unsupported overlay after login or reconnect.
 
-Automated contract tests prove that cursor hiding is attempted only while the
-receiver is a foreground AppKit application and that cleanup restores the local
-cursor. They are not human visual acceptance. If the iMac session is already
-locked, physically unlock it once before judging movement, shapes, clicking,
-dragging, or disconnect restoration. The current locked-session test still
-needs that physical unlock and therefore has no human cursor pass. The visible
-symptom can be a black screen with the iMac's own cursor even while transport
-and rendering remain live underneath. That is macOS's secure-login layer, not
-a failed Thunderbolt connection; the receiver deliberately does not draw over
-or bypass it.
+Automated contract tests prove that build 18 keeps window-scoped cursor
+suppression across ordinary AppKit/key-window focus changes, while the secure
+session-resign path still blanks and balances the process-global hide. They are
+not human visual acceptance. If the iMac session is already locked, physically
+unlock it once before judging movement, shapes, clicking, dragging, or
+disconnect restoration. The current locked-session test still needs that
+physical unlock and therefore has no human cursor pass. The visible symptom can
+be a black screen with the iMac lock-screen cursor; that is macOS's secure-login
+layer, not receiver output. The receiver deliberately does not draw over or
+bypass it.
 
 ## Install and rollback
 

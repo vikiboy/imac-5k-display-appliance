@@ -1,5 +1,9 @@
 # Research note: what "5K60" means and how to close the cadence gap
 
+Display restart/wake is a separate control-plane problem. Its researched but
+unshipped design is documented in
+[`sleeping-panel-control-plane.md`](sleeping-panel-control-plane.md).
+
 ## Current evidence (2026-08-30)
 
 The working appliance creates a 5120 × 2880 virtual display whose macOS mode

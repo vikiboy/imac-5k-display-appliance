@@ -24,6 +24,9 @@ narrower contract.
 - [`research/5k60-cadence.md`](research/5k60-cadence.md) — primary-source
   analogies, the two-slot experiment, honest 5K60 terminology, and measurable
   release gates.
+- [`research/sleeping-panel-control-plane.md`](research/sleeping-panel-control-plane.md)
+  — unshipped listener-first recovery design for receiver restart while the
+  iMac panel is sleeping or the console session is already locked.
 - [`repro/imac-2017-5K/results/2026-08-30-serial-overlap-ab.md`](repro/imac-2017-5K/results/2026-08-30-serial-overlap-ab.md)
   — exact-hardware cadence A/B, direct-link result, limitations, and commands.
 - [`repro/imac-2017-5K/results/2026-08-30-v0.5-resource-soak.md`](repro/imac-2017-5K/results/2026-08-30-v0.5-resource-soak.md)
