@@ -6,11 +6,18 @@ display setup.
 
 Before changing visibility:
 
-- [ ] Finish the recorded 5K60, reconnect, sleep/wake, and one-hour resource
-      acceptance on the exact installed commit.
+- [ ] Bind the provisional two-slot result to immutable sender/receiver hashes,
+      repeat its one-hour resource soak, and finish reconnect, sleep/wake, and
+      human cursor acceptance after physical unlock. Do not market the current
+      A/B as perfect 60 Hz.
 - [ ] Replace the current arrangement evidence with a clean recapture if any
       unrelated window text remains visible, then update
       `docs/ASSET-PROVENANCE.md`.
+- [ ] If physical receiver output is illustrated, use a project-owned on-device
+      photograph. Do not publish a remote macOS screen capture as output proof:
+      it omits the receiver's shielding/Metal surface.
+- [ ] Keep the motion-source screenshot captioned as MacBook source evidence,
+      not iMac output or human cursor acceptance.
 - [ ] Audit the complete Git history for names, local-hostname email addresses,
       paths, hostnames, IP addresses, serial numbers, and old visual assets.
 - [ ] Decide whether to rewrite the three private development commits whose

@@ -1,5 +1,14 @@
 # GitHub Build Provenance Attestation
 
+> **Inherited upstream reference — not a verification procedure for this
+> derivative.** The text below describes binaries published by
+> [`swellweb/targetBridge`](https://github.com/swellweb/targetBridge). This
+> private personal derivative has no public release, official artifact
+> attestation, or published binary channel. Verify its locally built appliance
+> binaries with the source revision and SHA-256 procedure in the
+> [2017-iMac reproduction guide](repro/imac-2017-5K/README.md), not with the
+> upstream command below.
+
 TargetBridge release binaries are cryptographically signed using **GitHub
 Artifact Attestations** (built on Sigstore). This provides a secure,
 tamper-proof software supply chain by enabling anyone to verify that the

@@ -104,7 +104,7 @@ Rather than aggressively clearing/wiping the entire audio buffer when it gets ba
   ```
 * **How it works**: If a burst of socket-backlogged packets arrives, the check immediately triggers. Instead of deleting all data, it **advances the read tail pointer by the exact excess byte count**.
 * **The Result**: The oldest, lagging samples are skipped instantly. The circular buffer is left holding exactly **150ms of the newest, most up-to-date audio samples**.
-* **Acoustics**: Truncating just the oldest samples in this manner is perceived by the ear as a seamless micro-skip, maintaining crystal-clear playout fidelity, while guaranteeing that audio latency stays perfectly locked to the video stream.
+* **Acoustics**: Truncating the oldest samples bounds the audio backlog and may be perceived as a brief micro-skip instead of steadily increasing delay. This queue policy does not guarantee exact A/V synchronization or establish any physical video-presentation cadence.
 
 ---
 

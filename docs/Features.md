@@ -23,9 +23,11 @@ Related reading:
 
 Each sender session offers three ready-to-use display profiles before connecting:
 
-- `Work 5K` creates an extended desktop at 5K and 48 FPS with render matching
-  enabled. It does not select the separate experimental 5K 60 FPS preset.
-- `Low latency` mirrors the desktop at 1440p and 60 FPS without audio relay.
+- `Work 5K` requests an extended 5K desktop with a 48 FPS stream target and
+  render matching enabled. It does not select the separate experimental 5K mode
+  with a 60 FPS target. These labels do not prove physical presentation cadence.
+- `Low latency` mirrors the desktop at 1440p with a 60 FPS stream target and no
+  audio relay.
 - `Presentation` mirrors the desktop at 1440p with audio relay enabled.
 
 TargetBridge remembers the last selected profile for each discovered receiver, so

@@ -14,6 +14,12 @@ bundle identifiers still contain `TargetBridge` for source compatibility and
 stable macOS privacy behavior during qualification; that does not imply an
 official upstream release.
 
+For a private working clone, the recommended remote identity is an owner-named
+derivative repository as `origin`, with `swellweb/targetBridge` retained as a
+fetch-only `upstream` remote. Do not push derivative commits to upstream or use
+upstream's name, screenshots, signing identity, release page, or support channels
+as though they belonged to this project.
+
 ## Upstream foundation
 
 This work is derived from:
@@ -51,11 +57,13 @@ and the broader application structure.
 ## Derivative modifications
 
 Vikram Mohanty's 2026 modifications add the 2017-iMac-specific native Retina
-profile; lossless 8-bit 4:4:4 TBD2/DPCM negotiation and integration; exact
-point/pixel activation checks; direct-interface selection; GPU, parser,
-lifecycle, and bounded-resource hardening; appliance receiver and launch
-automation; test fixtures; reproducible hardware evidence; and this independent
-documentation and visual identity.
+profile; lossless 8-bit TBD2/DPCM negotiation and integration; exact point/pixel
+activation checks; direct-interface selection; GPU, parser, lifecycle, and
+bounded-resource hardening; stable-path launch automation; screen-saver and
+screen-lock lifecycle controls; test fixtures; reproducible hardware evidence;
+and this independent documentation and visual identity. The separate inherited
+raw diagnostic remains NV12/4:2:0 and is not represented as the DPCM full-RGB
+fidelity path.
 
 Copyright in upstream work remains with its respective holders. Copyright in
 new contributions remains with their respective contributors. The derivative
@@ -72,4 +80,6 @@ substantial portions of this software and preserve relevant attribution.
 The project name and presentation do not grant permission to imply that a fork
 or binary is an official TargetBridge or Apple release. Fork maintainers should
 use their own identity, support policy, screenshots, credentials, and release
-signing.
+signing. This repository is maintained for personal use and offers no support
+SLA, roadmap, compatibility promise, or guarantee of future releases; that
+maintenance posture does not narrow the permissions granted by the MIT license.

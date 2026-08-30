@@ -77,6 +77,9 @@ For extended desktop, open macOS **System Settings → Displays → Arrange** on
 
 ## Stream profiles
 
+Values after `@` are requested stream-rate targets, not measurements of the
+receiver's physical presentation cadence.
+
 - `Standard · 2560 × 1440`
   - conservative baseline
   - highest compatibility

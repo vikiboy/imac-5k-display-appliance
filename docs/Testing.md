@@ -1,8 +1,8 @@
-# Testing TargetBridge Without Hardware
+# Testing the iMac 5K Display Appliance Without Hardware
 
 Everything on this page runs on one Mac with **no Thunderbolt cable, no
 second machine, and no Apple Silicon requirement** (except where noted).
-CI runs the first two suites on every push/PR.
+CI runs the first three suites on every push/PR.
 
 ## 1. Sender unit tests (Swift)
 
@@ -20,7 +20,22 @@ xcodebuild test -project TargetBridge.xcodeproj -scheme TBDisplaySender -destina
 
 Test sources live in `TargetBridge-Sender/TBDisplaySenderTests/`.
 
-## 2. Receiver parser tests (C)
+## 2. Appliance installer lifecycle tests (zsh)
+
+Exercises the real sender installer and uninstaller against isolated fake
+`defaults` and `launchctl` tools. It proves the lossless Thunderbolt launch
+contract and verifies that TargetBridge's display-sleep preference is backed
+up once, changed reversibly, never overwrites a later user choice, and fails
+closed when recovery metadata is corrupt. It does not touch the running app,
+the developer's preferences, or launchd domain.
+
+```bash
+TargetBridge-Sender/tests/test_appliance_installer_contract.zsh \
+  TargetBridge-Sender/scripts/install_targetbridge_5k_sender_launch_agent.sh
+TargetBridge-Sender/tests/test_sleep_preference_lifecycle.zsh
+```
+
+## 3. Receiver parser and appliance tests (C, Objective-C, and zsh)
 
 Unit tests for the streaming packet parser in `net.c` — fragmented and
 contiguous feeds, the NUL-sentinel guarantee, corrupt/oversized length
@@ -34,7 +49,7 @@ make test
 
 Test sources live in `TargetBridge-Receiver/TBReceiverC/tests/`.
 
-## 3. Mock sender (protocol-level fault injection)
+## 4. Mock sender (protocol-level fault injection)
 
 `TargetBridge-Receiver/TBReceiverC/tests/mock_sender.py` (stdlib-only
 Python 3) speaks the full wire protocol against a running receiver:
@@ -55,7 +70,7 @@ cd TargetBridge-Receiver/TBReceiverC && make && ./tbreceiver --windowed
 python3 TargetBridge-Receiver/TBReceiverC/tests/mock_sender.py --mode stream --duration 5
 ```
 
-## 4. Loopback smoke test (one command)
+## 5. Loopback smoke test (one command)
 
 Builds the receiver, launches it windowed, and drives all mock-sender
 phases with pass/fail assertions on the receiver's log:
@@ -69,7 +84,7 @@ Needs a GUI session (an SDL window opens briefly) and the receiver build
 deps (`brew install ffmpeg sdl2 pkgconf`), so it is a local dev tool rather
 than a CI job.
 
-## 5. Real sender ↔ receiver on one Mac (no cable)
+## 6. Real sender ↔ receiver on one Mac (no cable)
 
 The receiver binds `0.0.0.0:54321` and accepts any peer, so an Apple
 Silicon Mac can stream to a receiver running on itself over the LAN
@@ -96,15 +111,18 @@ log stream --predicate 'subsystem == "com.targetbridge.sender"'
 The receiver logs to stderr; under the LaunchAgent that lands in
 `~/Library/Logs/TargetBridgeReceiver.launchd.err.log`.
 
-## Experimental 5K at 60 FPS
+## Experimental 5K with a 60 FPS target
 
 `native5k60Experimental` is an opt-in HEVC profile for testing recent Apple
-Silicon encoders at 5120 x 2880 and 60 FPS. It does not alter the stable 5K
-profile, which remains at 48 FPS and is the recommended choice for daily work.
+Silicon encoders at 5120 x 2880 with a requested 60 FPS capture/encode target.
+It does not alter the stable 5K profile, which retains a 48 FPS target and is
+the recommended choice for daily work. Selecting either profile proves only the
+requested topology and target, not the receiver's physical presentation cadence.
 
 Real-world M4 testing has reached 56-57 FPS but also showed temporary drops
 under mixed workloads and added heat when Input Dockstation is active. Treat
-this profile as a benchmark and feedback tool, not a guaranteed 60 FPS mode.
+this profile as a benchmark and feedback tool, not a guaranteed 60 FPS capture,
+transport, or physical-presentation result.
 
 Use it only for a test session, either from the Sender's stream-profile picker
 or with the automation alias:
@@ -115,6 +133,8 @@ targetbridge connect --receiver <receiver-ip> --mode extended --preset 5k60
 
 After at least one minute of normal desktop use, note the Sender FPS shown in
 the session card, whether input remains responsive, and any capture or decoder
-errors. For a two-receiver experiment, start one session per receiver and
-record the FPS for each session separately. Include the sender model, macOS
-version, receiver model, cable type, and selected transport with the report.
+errors. Label that number as sender telemetry; it is not a receiver presentation
+count. For a two-receiver experiment, start one session per receiver and record
+the sender telemetry for each session separately. Include the sender model,
+macOS version, receiver model, cable type, and selected transport with the
+report.

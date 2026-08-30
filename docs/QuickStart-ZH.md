@@ -77,6 +77,8 @@ cd TargetBridge-Receiver
 
 ## 流配置（Stream profiles）
 
+`@` 后的数字表示请求的流帧率目标，不是接收端物理呈现帧率的实测结果。
+
 - `Standard · 2560 × 1440`
   - 保守的基准配置
   - 兼容性最高

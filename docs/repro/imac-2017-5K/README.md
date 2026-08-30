@@ -50,8 +50,12 @@ The receiver must include `x86_64`; the 2017 iMac is Intel.
     -configuration Debug \
     -destination 'platform=macOS' \
     -derivedDataPath .build/TestDerivedData \
-    test
+  test
 )
+
+TargetBridge-Sender/tests/test_appliance_installer_contract.zsh \
+  TargetBridge-Sender/scripts/install_targetbridge_5k_sender_launch_agent.sh
+TargetBridge-Sender/tests/test_sleep_preference_lifecycle.zsh
 
 (
   cd TargetBridge-Receiver/TBReceiverC
@@ -108,23 +112,43 @@ duration, delivered timer ticks, and `filesWritten=0`.
 
 ## Profile names and frame rates
 
-`Work 5K` selects the normal `native5k` preset: 5120 × 2880 at 48 FPS. The
-lossless 60 FPS acceptance experiment instead uses the separate
+`Work 5K` selects the normal `native5k` preset: 5120 × 2880 with a 48 FPS
+stream target. The lossless experiment with a requested 60 FPS target instead
+uses the separate
 `native5k60Experimental` preset with DPCM explicitly enabled and successfully
-negotiated. Do not treat selecting `Work 5K` as evidence of a 60 FPS run.
+negotiated. The launch-agent CLI spelling is `native5k60`; it maps to that
+experimental preset. Do not treat selecting `Work 5K`, requesting a 60 Hz mode,
+or counting captured packets as evidence of perfect 60 Hz presentation.
+
+The receiver's product default is `displaySyncEnabled == YES`. Use no display-
+sync override for acceptance. The exact `TB_DISPLAY_SYNC=0` environment value is
+diagnostic-only for a controlled latency/tearing comparison; missing, empty, or
+any other value leaves synchronization enabled. Record the receiver's
+`displaySync=on` startup diagnostic with every physical-presentation result.
 
 ## Cursor acceptance mode
 
 Leave TargetBridge's optional **Large Cursor** toggle off for this appliance
-build. The accepted path captures the native macOS cursor inside the Retina
+build. The intended path captures the native macOS cursor inside the Retina
 frame and hides the iMac's otherwise-duplicated local cursor only while a
-display session is active. That preserves native arrow, I-beam, hand, resize,
-and temporary system cursor shapes. The dedicated DPCM receiver does not yet
+display session is active. That is intended to preserve native arrow, I-beam,
+hand, resize, and temporary system cursor shapes. The dedicated DPCM receiver does not yet
 re-present packet `0x32` over a cached DPCM texture, so the optional custom
 large-cursor overlay is explicitly outside this release rather than silently
 claimed as working. The appliance launch agent explicitly supplies
 `--large-cursor 0`, so a stale GUI preference cannot accidentally select that
 unsupported overlay after login or reconnect.
+
+Automated contract tests prove that cursor hiding is attempted only while the
+receiver is a foreground AppKit application and that cleanup restores the local
+cursor. They are not human visual acceptance. If the iMac session is already
+locked, physically unlock it once before judging movement, shapes, clicking,
+dragging, or disconnect restoration. The current locked-session test still
+needs that physical unlock and therefore has no human cursor pass. The visible
+symptom can be a black screen with the iMac's own cursor even while transport
+and rendering remain live underneath. That is macOS's secure-login layer, not
+a failed Thunderbolt connection; the receiver deliberately does not draw over
+or bypass it.
 
 ## Install and rollback
 
@@ -185,6 +209,36 @@ extension, display driver, firmware, or system-wide daemon. The current personal
 build is ad-hoc signed, so another Mac still needs one explicit Screen Recording
 grant at the sender's final path. A Developer ID/notarized release is separate
 distribution work, not hidden behind the word “automatic.”
+
+The final sender path and bundle identity are part of the macOS TCC contract:
+install once, grant Screen Recording to that installed app, and do not use an
+ad-hoc build at a changing path for acceptance. The receiver installer also:
+
+- creates a per-user launch agent for foreground AppKit launch;
+- disables the local screen saver while installed and preserves the original
+  preference for uninstall; and
+- leaves screen lock unchanged unless
+  `TB_APPLIANCE_DISABLE_SCREEN_LOCK=1` is explicitly supplied, in which case
+  the original setting is backed up for reversible uninstall.
+
+Disabling future idle locking cannot unlock a session that is already locked.
+Do not weaken the lock policy merely to make an unattended demo look complete.
+
+On the iMac, inspect the managed preference markers and current policies without
+printing any password:
+
+```sh
+defaults read com.vikiboy.imac5k-display-appliance
+defaults -currentHost read com.apple.screensaver idleTime
+sysadminctl -screenLock status
+launchctl print "gui/$(id -u)/com.targetbridge.receiver5k" | \
+  grep -E 'state = running|pid = '
+```
+
+After uninstall, re-run the preference commands and verify that the saved
+screen-saver value—and the screen-lock value, if this project managed it—were
+restored. Never paste the account password or raw preference export into a
+published result.
 
 Rollback:
 
@@ -269,6 +323,69 @@ the sender and repeat cursor movement, clicking, and disconnect once.
 9. Repeat unplug/replug, sender restart, receiver restart, and sleep/wake.
 10. Run a ten-minute initial soak and a one-hour sustained soak.
 
+## Direct-link and serial/overlap A/B
+
+Build the universal link and protocol diagnostics:
+
+```sh
+(
+  cd TargetBridge-Receiver/TBReceiverC
+  make benchmark-network-metal-universal
+)
+
+scp TargetBridge-Receiver/TBReceiverC/benchmark_tb_link_universal \
+  '<imac-ssh>:/tmp/'
+```
+
+Run the link receiver on the iMac and the sender on the MacBook, using only the
+verified Thunderbolt Bridge link-local address. The recorded setup reached
+17.06 Gbit/s, but a new run should report its own value:
+
+```sh
+# iMac
+/tmp/benchmark_tb_link_universal receive '<imac-tb-ip>' 54322 8589934592
+
+# MacBook
+./TargetBridge-Receiver/TBReceiverC/benchmark_tb_link_universal \
+  send '<imac-tb-ip>' 54322 8589934592
+```
+
+Switch the installed receiver between serial and one-packet overlap without
+changing the sender app path or its Screen Recording identity:
+
+```sh
+ssh '<imac-ssh>' \
+  'TB_INSTALL_RECEIVE_OVERLAP=0 /bin/zsh -s -- "$HOME/Applications/TargetBridge 5K Receiver.app"' \
+  < TargetBridge-Receiver/scripts/install_targetbridge_5k_receiver_launch_agent.sh
+
+TargetBridge-Sender/.build/Diagnostics/probe_virtual_display_animation 600
+
+ssh '<imac-ssh>' \
+  'TB_INSTALL_RECEIVE_OVERLAP=1 /bin/zsh -s -- "$HOME/Applications/TargetBridge 5K Receiver.app"' \
+  < TargetBridge-Receiver/scripts/install_targetbridge_5k_receiver_launch_agent.sh
+
+TargetBridge-Sender/.build/Diagnostics/probe_virtual_display_animation 600
+```
+
+Keep the source workload, duration, sender bundle, receiver bundle, display
+arrangement, and cable path identical. Grade receiver hardware presentation
+timestamps and integrity counters, not packet cadence alone. The complete
+sanitized result and log extraction command are in
+[`results/2026-08-30-serial-overlap-ab.md`](results/2026-08-30-serial-overlap-ab.md).
+
+Summarize a completed resource TSV without modifying it:
+
+```sh
+./docs/repro/imac-2017-5K/scripts/summarize_resources.zsh \
+  docs/repro/imac-2017-5K/results/<resource-run>.tsv 600
+```
+
+The summary reports linear-regression RSS slope as MiB/hour plus CPU, thread,
+file-descriptor, app/support/log-size, process-liveness, and thermal-warning
+bounds for each endpoint. The optional second argument excludes the stated
+warm-up seconds before computing every statistic; release qualification uses
+600 seconds.
+
 ## Resource acceptance
 
 Record sender and receiver RSS, virtual memory, CPU, open file descriptors,
@@ -329,4 +446,33 @@ append stdout/stderr to permanent files.
 See [`results/2026-08-29-component-tests.md`](results/2026-08-29-component-tests.md).
 The incremental physical-iMac evidence is recorded separately in
 [`results/2026-08-29-imac-runtime-acceptance.md`](results/2026-08-29-imac-runtime-acceptance.md).
-Neither file substitutes for the pending active 5K60 and one-hour-soak result.
+The first active whole-frame resource baseline and its explicit failed RSS gate
+are recorded in
+[`results/2026-08-29-active-resource-soak.md`](results/2026-08-29-active-resource-soak.md).
+The complete version 0.5/build 8 one-hour run, including its receiver RSS
+qualification failure and secure-session caveat, is recorded in
+[`results/2026-08-30-v0.5-resource-soak.md`](results/2026-08-30-v0.5-resource-soak.md).
+The version 0.6/build 10 follow-up reproduced a release-blocking memory
+staircase, isolated its once-per-minute power-call cadence, and is recorded in
+[`results/2026-08-30-v0.6-resource-soak.md`](results/2026-08-30-v0.6-resource-soak.md).
+The deliberately perturbed version 0.7 diagnostic separated that power fix from
+bounded lazy telemetry-page commitment; it is recorded in
+[`results/2026-08-30-v0.7-resource-soak.md`](results/2026-08-30-v0.7-resource-soak.md)
+and is not release evidence.
+The unperturbed version 0.8/build 13 run completed a full hour, failed the
+strict receiver RSS gate, and revealed that a securely locked receiver could
+consume and decode full-rate frames while completing no presentation. Its
+measurements and lifecycle disposition are in
+[`results/2026-08-30-v0.8-resource-soak.md`](results/2026-08-30-v0.8-resource-soak.md).
+The resulting version 0.9 lifecycle candidate, exact binary hashes, component
+results, live frame-free control-plane probe, and still-open human gates are in
+[`results/2026-08-30-v0.9-lifecycle-candidate.md`](results/2026-08-30-v0.9-lifecycle-candidate.md).
+The first hardware presentation A/B is in
+[`results/2026-08-30-serial-overlap-ab.md`](results/2026-08-30-serial-overlap-ab.md).
+It selects the fixed two-slot receiver provisionally, but its presentation
+oracle is superseded and must be repeated with the final candidate.
+The bounded
+[20-minute resource follow-up](results/2026-08-30-overlap-resource-followup.md)
+passes its selected short-run slope window but does not replace the pending
+one-hour corrected-candidate resource, reconnect, sleep/wake, or human cursor
+acceptance gates.

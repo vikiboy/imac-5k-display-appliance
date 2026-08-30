@@ -76,3 +76,9 @@ support/log storage remained zero throughout the one-minute baseline.
 - visual text/grid/gradient/cursor acceptance with the Dell attached;
 - unplug/replug and complete sender/receiver sleep-wake recovery;
 - ten-minute initial and one-hour active resource soaks.
+
+Later evidence supersedes parts of this open list: see the
+[one-hour qualified failure](2026-08-29-active-resource-soak.md) and the
+[serial/two-slot cadence A/B](2026-08-30-serial-overlap-ab.md). Reconnect,
+sleep/wake, an overlap-candidate one-hour soak, and human cursor acceptance after
+one physical unlock remain open.

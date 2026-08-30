@@ -52,7 +52,8 @@ one-hour soak.
 ## Not proved by this file
 
 - Radeon Pro 575 GPU compatibility or performance;
-- sustained 5K60 DPCM over the cable;
+- sustained 5K DPCM at a requested 60 FPS target over the cable, including
+  corrected physical-presentation telemetry;
 - end-to-end latency;
 - exact source-to-drawable geometry on the receiver;
 - memory, thermal, battery, or storage behavior during a long session;
