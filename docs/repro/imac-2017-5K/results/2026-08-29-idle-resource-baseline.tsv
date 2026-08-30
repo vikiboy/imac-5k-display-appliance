@@ -1,0 +1,22 @@
+# targetbridge_resource_schema=2
+# git_revision=fa8b8ce6272dcd851d4d7ac152d910eb323e3551
+# worktree=clean
+# requested_duration_s=60
+# interval_s=10
+# planned_max_samples_per_machine=7
+# ssh_target=caller_supplied_not_recorded
+timestamp_utc	elapsed_s	machine	process_status	pid	cpu_percent	rss_kib	vsz_kib	thread_count	open_fd_count	app_kib	app_support_kib	log_kib	power_source	battery_percent	battery_state	thermal_state
+2026-08-30T01:34:50Z	0	local_sender	running	16838	0.1	72384	435607744	4	7	7556	16	16	AC Power	100%	charged	Note: No thermal warning level has been recorded; Note: No performance warning level has been recorded; Note: No CPU power status has been recorded
+2026-08-30T01:34:50Z	0	remote_receiver	running	19642	0.0	16336	34819404	5	11	1500	0	0	AC Power	na	not_present	Note: No thermal warning level has been recorded; Note: No performance warning level has been recorded; 2026-08-29 21:34:50 -0400 CPU Power notify; CPU_Scheduler_Limit = 100; CPU_Available_CPUs = 4; CPU_Speed_Limit = 100
+2026-08-30T01:35:00Z	10	local_sender	running	16838	0.1	72384	435607744	4	7	7556	16	16	AC Power	100%	charged	Note: No thermal warning level has been recorded; Note: No performance warning level has been recorded; Note: No CPU power status has been recorded
+2026-08-30T01:35:00Z	10	remote_receiver	running	19642	0.0	16336	34819404	5	11	1500	0	0	AC Power	na	not_present	Note: No thermal warning level has been recorded; Note: No performance warning level has been recorded; 2026-08-29 21:35:01 -0400 CPU Power notify; CPU_Scheduler_Limit = 100; CPU_Available_CPUs = 4; CPU_Speed_Limit = 100
+2026-08-30T01:35:10Z	20	local_sender	running	16838	0.1	72384	435607744	4	7	7556	16	16	AC Power	100%	charged	Note: No thermal warning level has been recorded; Note: No performance warning level has been recorded; Note: No CPU power status has been recorded
+2026-08-30T01:35:10Z	20	remote_receiver	running	19642	0.0	16336	34819404	5	11	1500	0	0	AC Power	na	not_present	Note: No thermal warning level has been recorded; Note: No performance warning level has been recorded; 2026-08-29 21:35:10 -0400 CPU Power notify; CPU_Scheduler_Limit = 100; CPU_Available_CPUs = 4; CPU_Speed_Limit = 100
+2026-08-30T01:35:20Z	30	local_sender	running	16838	0.1	72384	435607744	4	7	7556	16	16	AC Power	100%	charged	Note: No thermal warning level has been recorded; Note: No performance warning level has been recorded; Note: No CPU power status has been recorded
+2026-08-30T01:35:20Z	30	remote_receiver	running	19642	0.0	16336	34819404	5	11	1500	0	0	AC Power	na	not_present	Note: No thermal warning level has been recorded; Note: No performance warning level has been recorded; 2026-08-29 21:35:21 -0400 CPU Power notify; CPU_Scheduler_Limit = 100; CPU_Available_CPUs = 4; CPU_Speed_Limit = 100
+2026-08-30T01:35:30Z	40	local_sender	running	16838	0.1	72384	435607744	4	7	7556	16	16	AC Power	100%	charged	Note: No thermal warning level has been recorded; Note: No performance warning level has been recorded; Note: No CPU power status has been recorded
+2026-08-30T01:35:30Z	40	remote_receiver	running	19642	0.0	16336	34819404	5	11	1500	0	0	AC Power	na	not_present	Note: No thermal warning level has been recorded; Note: No performance warning level has been recorded; 2026-08-29 21:35:30 -0400 CPU Power notify; CPU_Scheduler_Limit = 100; CPU_Available_CPUs = 4; CPU_Speed_Limit = 100
+2026-08-30T01:35:40Z	50	local_sender	running	16838	0.1	72384	435607744	4	7	7556	16	16	AC Power	100%	charged	Note: No thermal warning level has been recorded; Note: No performance warning level has been recorded; Note: No CPU power status has been recorded
+2026-08-30T01:35:40Z	50	remote_receiver	running	19642	0.0	16336	34819404	5	11	1500	0	0	AC Power	na	not_present	Note: No thermal warning level has been recorded; Note: No performance warning level has been recorded; 2026-08-29 21:35:41 -0400 CPU Power notify; CPU_Scheduler_Limit = 100; CPU_Available_CPUs = 4; CPU_Speed_Limit = 100
+2026-08-30T01:35:50Z	60	local_sender	running	16838	0.1	72384	435607744	4	7	7556	16	16	AC Power	100%	charged	Note: No thermal warning level has been recorded; Note: No performance warning level has been recorded; Note: No CPU power status has been recorded
+2026-08-30T01:35:50Z	60	remote_receiver	running	19642	0.0	16336	34819404	5	11	1500	0	0	AC Power	na	not_present	Note: No thermal warning level has been recorded; Note: No performance warning level has been recorded; 2026-08-29 21:35:50 -0400 CPU Power notify; CPU_Scheduler_Limit = 100; CPU_Available_CPUs = 4; CPU_Speed_Limit = 100

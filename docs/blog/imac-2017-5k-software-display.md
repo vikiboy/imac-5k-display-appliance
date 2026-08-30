@@ -191,7 +191,9 @@ The current commands and sanitized component-result summaries live under
 | Raw NV12 parser | 99 checks | Strict raw diagnostic parsing |
 | Receiver shutdown fixture | Passed | Idle listener, active peer, descriptor reuse, and closed post-shutdown admission |
 | Receiver installer-order fixture | Passed | A disabled launchd override is cleared before bootstrap |
+| AppKit launch lifecycle | Passed | One launch completion; borderless idle controls can become key without reconnect focus stealing |
 | Native Metal fixture | 192 frames passed | Real GPU pipelines, stable 3/1/1 DPCM reuse, and presentation-epoch handoff |
+| 2017 iMac idle baseline | 7/7 stable samples | 0.0% CPU, 16,336 KiB RSS, 11 FDs, and no app-log/support growth over 60 seconds |
 | Virtual display probe | **pending recorded rerun** | Must show 2560 × 1440 points → 5120 × 2880 pixels on the sender |
 | iMac end-to-end DPCM | **pending** | Required before any production claim |
 | Soak/reconnect/resources | **pending** | Required before any production claim |
