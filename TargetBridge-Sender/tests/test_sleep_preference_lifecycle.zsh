@@ -1,12 +1,17 @@
 #!/bin/zsh
 set -euo pipefail
 
+# This lifecycle fixture is intentionally ad-hoc signed. Production appliance
+# installers default to requiring a certificate-backed designated requirement.
+export TB_REQUIRE_STABLE_CODESIGN=0
+
 script_dir="${0:A:h}"
 sender_dir="${script_dir:h}"
 installer="${1:-${sender_dir}/scripts/install_targetbridge_5k_sender_launch_agent.sh}"
 uninstaller="${2:-${sender_dir}/scripts/uninstall_targetbridge_5k_sender_launch_agent.sh}"
 fake_defaults="${script_dir}/fixtures/fake_defaults.zsh"
 fake_launchctl="${script_dir}/fixtures/fake_launchctl.zsh"
+long_running_source="${script_dir}/fixtures/long_running_process.c"
 
 for required in "$installer" "$uninstaller" "$fake_defaults" "$fake_launchctl"; do
   [[ -x "$required" ]] || {
@@ -14,6 +19,10 @@ for required in "$installer" "$uninstaller" "$fake_defaults" "$fake_launchctl"; 
     exit 1
   }
 done
+[[ -r "$long_running_source" ]] || {
+  print -u2 -- "sender sleep preference test failed: not readable: $long_running_source"
+  exit 1
+}
 
 test_root="$(mktemp -d)"
 cleanup() {
@@ -30,16 +39,25 @@ export TB_CODESIGN_BIN="/usr/bin/true"
 app_path="${HOME}/Applications/TargetBridge 5K Sender.app"
 executable_path="${app_path}/Contents/MacOS/TargetBridge"
 mkdir -p "${executable_path:h}" "$TB_FAKE_DEFAULTS_STATE_DIR"
-cp /bin/sleep "$executable_path"
+# Never copy and rename a signed macOS system executable as a test fixture.
+# Modern macOS launch constraints correctly kill that binary and CrashReporter
+# misleadingly presents it as a TargetBridge crash. Build our own inert helper
+# in the temporary test home instead.
+clang_path="$(xcrun --find clang)"
+sdk_path="$(xcrun --sdk macosx --show-sdk-path)"
+"$clang_path" -isysroot "$sdk_path" -Os "$long_running_source" -o "$executable_path"
+/usr/bin/codesign --force --sign - "$executable_path"
 info_plist="${app_path}/Contents/Info.plist"
 plutil -create xml1 "$info_plist"
-plutil -insert CFBundleIdentifier -string com.targetbridge.sender "$info_plist"
+plutil -insert CFBundleIdentifier -string com.vikiboy.imac5kdisplay.sender "$info_plist"
 plutil -insert CFBundleExecutable -string TargetBridge "$info_plist"
 
-domain="com.targetbridge.sender"
+domain="com.vikiboy.imac5kdisplay.sender"
 key="fd.tbdisplaysender.preventDisplaySleep"
 backup="${HOME}/Library/Application Support/TargetBridge/Sender/prevent-display-sleep.original"
-plist_path="${HOME}/Library/LaunchAgents/com.targetbridge.sender5k.plist"
+plist_path="${HOME}/Library/LaunchAgents/com.vikiboy.imac5kdisplay.sender.plist"
+enabled_path="${HOME}/Library/Application Support/TargetBridge/Sender/enabled"
+legacy_plist_path="${HOME}/Library/LaunchAgents/com.targetbridge.sender5k.plist"
 
 read_pref() {
   "$fake_defaults" read "$domain" "$key"
@@ -59,11 +77,20 @@ run_uninstall() {
 
 # An absent original is represented explicitly, survives reinstall, and is
 # restored as absence only when the appliance-owned false value is unchanged.
+mkdir -p "${legacy_plist_path:h}"
+print -r -- legacy > "$legacy_plist_path"
 run_install
+[[ ! -e "$legacy_plist_path" ]] || {
+  print -u2 -- "sender installer retained the build-18 launch agent"
+  exit 1
+}
 [[ "$(<"$backup")" == absent && "$(read_pref)" == 0 ]] || exit 1
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$plist_path")" == /bin/zsh ]] || exit 1
 wrapper_guard="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:2' "$plist_path")"
 [[ "$wrapper_guard" == '[[ -e "$1" ]] || exit 0; shift; exec "$@"' ]] || exit 1
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:3' "$plist_path")" == imac5k-monitor-launch ]] || exit 1
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:4' "$plist_path")" == "$enabled_path" ]] || exit 1
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:5' "$plist_path")" == /usr/bin/open ]] || exit 1
 guard_fixture="${test_root}/guard-enabled"
 if ! /bin/zsh -c "$wrapper_guard" imac5k-test "$guard_fixture" /usr/bin/false; then
   print -u2 -- "absent marker did not suppress speculative launch"
@@ -119,7 +146,7 @@ if run_uninstall 2>/dev/null; then exit 1; fi
 /bin/unlink "$backup"
 write_pref 0
 run_install
-"$executable_path" 600 &
+"$executable_path" &
 sender_pid=$!
 for _ in {1..20}; do
   /bin/kill -0 "$sender_pid" 2>/dev/null && break
@@ -140,6 +167,7 @@ write_pref 1
 export TB_FAKE_LAUNCHCTL_FAIL_OPERATION=bootstrap
 export TB_FAKE_LAUNCHCTL_START_PATH_ON_FAILURE="$executable_path"
 export TB_FAKE_LAUNCHCTL_PID_PATH="${test_root}/ambiguous-bootstrap.pid"
+print -r -- legacy > "$legacy_plist_path"
 if run_install 2>/dev/null; then
   print -u2 -- "sender installer unexpectedly succeeded during injected bootstrap failure"
   exit 1
@@ -148,9 +176,12 @@ ambiguous_pid="$(<"$TB_FAKE_LAUNCHCTL_PID_PATH")"
 unset TB_FAKE_LAUNCHCTL_FAIL_OPERATION
 unset TB_FAKE_LAUNCHCTL_START_PATH_ON_FAILURE
 unset TB_FAKE_LAUNCHCTL_PID_PATH
-enabled_path="${HOME}/Library/Application Support/TargetBridge/Sender/enabled"
 [[ "$(read_pref)" == 1 ]] || exit 1
 [[ ! -e "$plist_path" && ! -e "$enabled_path" && ! -e "$backup" ]] || exit 1
+[[ -e "$legacy_plist_path" && "$(<"$legacy_plist_path")" == legacy ]] || {
+  print -u2 -- "failed install rollback did not restore the build-18 launch agent"
+  exit 1
+}
 if /bin/kill -0 "$ambiguous_pid" 2>/dev/null; then
   print -u2 -- "failed install rollback left an ambiguously launched sender running"
   exit 1

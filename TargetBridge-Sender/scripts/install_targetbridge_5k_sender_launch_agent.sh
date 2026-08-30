@@ -3,14 +3,17 @@ set -euo pipefail
 
 APP_PATH="${1:-${HOME}/Applications/TargetBridge 5K Sender.app}"
 EXECUTABLE_PATH="${APP_PATH}/Contents/MacOS/TargetBridge"
-LABEL="com.targetbridge.sender5k"
+LABEL="com.vikiboy.imac5kdisplay.sender"
+LEGACY_LABEL="com.targetbridge.sender5k"
 PLIST_DIR="${HOME}/Library/LaunchAgents"
 PLIST_PATH="${PLIST_DIR}/${LABEL}.plist"
+LEGACY_PLIST_PATH="${PLIST_DIR}/${LEGACY_LABEL}.plist"
 STATE_DIR="${HOME}/Library/Application Support/TargetBridge/Sender"
 ENABLED_PATH="${STATE_DIR}/enabled"
-PREFERENCE_DOMAIN="com.targetbridge.sender"
+PREFERENCE_DOMAIN="com.vikiboy.imac5kdisplay.sender"
 PREVENT_DISPLAY_SLEEP_KEY="fd.tbdisplaysender.preventDisplaySleep"
 ORIGINAL_PREVENT_SLEEP_PATH="${STATE_DIR}/prevent-display-sleep.original"
+REQUIRE_STABLE_CODESIGN="${TB_REQUIRE_STABLE_CODESIGN:-1}"
 DEFAULTS_BIN="${TB_DEFAULTS_BIN:-/usr/bin/defaults}"
 LAUNCHCTL_BIN="${TB_LAUNCHCTL_BIN:-/bin/launchctl}"
 CODESIGN_BIN="${TB_CODESIGN_BIN:-/usr/bin/codesign}"
@@ -93,9 +96,22 @@ fi
 "$CODESIGN_BIN" --verify --deep --strict "$APP_PATH"
 bundle_identifier="$("$PLIST_BUDDY_BIN" -c 'Print :CFBundleIdentifier' "$APP_PATH/Contents/Info.plist" 2>/dev/null || true)"
 bundle_executable="$("$PLIST_BUDDY_BIN" -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist" 2>/dev/null || true)"
-if [[ "$bundle_identifier" != "com.targetbridge.sender" || "$bundle_executable" != "TargetBridge" ]]; then
+if [[ "$bundle_identifier" != "com.vikiboy.imac5kdisplay.sender" || "$bundle_executable" != "TargetBridge" ]]; then
   echo "Sender identity mismatch; refusing to install launch agent" >&2
   exit 65
+fi
+if [[ "$REQUIRE_STABLE_CODESIGN" == 1 ]]; then
+  signature_info="$("$CODESIGN_BIN" -d --verbose=4 "$APP_PATH" 2>&1)"
+  designated_requirement="$("$CODESIGN_BIN" -d -r- "$APP_PATH" 2>&1)"
+  if [[ "$signature_info" == *"Signature=adhoc"* ]]; then
+    echo "Sender is ad-hoc signed; refusing monitor mode because Screen Recording permission would be unstable." >&2
+    exit 65
+  fi
+  if [[ "$designated_requirement" != *'identifier "com.vikiboy.imac5kdisplay.sender"'* ||
+        "$designated_requirement" != *"certificate root ="* ]]; then
+    echo "Sender lacks a stable certificate-backed designated requirement." >&2
+    exit 65
+  fi
 fi
 
 mkdir -p "$PLIST_DIR" "$STATE_DIR"
@@ -103,9 +119,12 @@ mkdir -p "$PLIST_DIR" "$STATE_DIR"
 PLIST_WORK_DIR="$(mktemp -d)"
 PLIST_TEMPLATE="${PLIST_WORK_DIR}/agent.plist"
 PREVIOUS_PLIST="${PLIST_WORK_DIR}/previous.plist"
+PREVIOUS_LEGACY_PLIST="${PLIST_WORK_DIR}/previous-legacy.plist"
 PREVIOUS_ORIGINAL_PREVENT_SLEEP="${PLIST_WORK_DIR}/previous-original-prevent-sleep"
 MUTATION_STARTED=0
 HAD_PREVIOUS_PLIST=0
+HAD_LEGACY_PLIST=0
+HAD_LEGACY_JOB=0
 HAD_ENABLED_MARKER=0
 HAD_ORIGINAL_PREVENT_SLEEP=0
 PREVIOUS_PREVENT_SLEEP=absent
@@ -129,11 +148,18 @@ cleanup() {
     local sender_stopped=1
     "$LAUNCHCTL_BIN" disable "gui/$(id -u)/${LABEL}" >/dev/null 2>&1 || true
     "$LAUNCHCTL_BIN" bootout "gui/$(id -u)" "$PLIST_PATH" >/dev/null 2>&1 || true
+    "$LAUNCHCTL_BIN" disable "gui/$(id -u)/${LEGACY_LABEL}" >/dev/null 2>&1 || true
+    "$LAUNCHCTL_BIN" bootout "gui/$(id -u)/${LEGACY_LABEL}" >/dev/null 2>&1 || true
     force_stop_existing_sender >/dev/null 2>&1 || sender_stopped=0
     if (( HAD_PREVIOUS_PLIST == 1 )); then
       install -m 0644 "$PREVIOUS_PLIST" "$PLIST_PATH"
     else
       [[ ! -e "$PLIST_PATH" ]] || unlink "$PLIST_PATH"
+    fi
+    if (( HAD_LEGACY_PLIST == 1 )); then
+      install -m 0644 "$PREVIOUS_LEGACY_PLIST" "$LEGACY_PLIST_PATH"
+    else
+      [[ ! -e "$LEGACY_PLIST_PATH" ]] || unlink "$LEGACY_PLIST_PATH"
     fi
     if (( HAD_ENABLED_MARKER == 1 && sender_stopped == 1 )); then
       touch "$ENABLED_PATH"
@@ -150,6 +176,10 @@ cleanup() {
       "$LAUNCHCTL_BIN" enable "gui/$(id -u)/${LABEL}" >/dev/null 2>&1 || true
       "$LAUNCHCTL_BIN" bootstrap "gui/$(id -u)" "$PLIST_PATH" >/dev/null 2>&1 || true
     fi
+    if (( HAD_LEGACY_JOB == 1 && HAD_LEGACY_PLIST == 1 && HAD_ENABLED_MARKER == 1 && sender_stopped == 1 )); then
+      "$LAUNCHCTL_BIN" enable "gui/$(id -u)/${LEGACY_LABEL}" >/dev/null 2>&1 || true
+      "$LAUNCHCTL_BIN" bootstrap "gui/$(id -u)" "$LEGACY_PLIST_PATH" >/dev/null 2>&1 || true
+    fi
     if (( sender_stopped == 0 )); then
       echo "Rollback could not stop the exact sender; automatic mode remains disabled." >&2
     fi
@@ -157,6 +187,7 @@ cleanup() {
   fi
   [[ ! -e "$PLIST_TEMPLATE" ]] || unlink "$PLIST_TEMPLATE"
   [[ ! -e "$PREVIOUS_PLIST" ]] || unlink "$PREVIOUS_PLIST"
+  [[ ! -e "$PREVIOUS_LEGACY_PLIST" ]] || unlink "$PREVIOUS_LEGACY_PLIST"
   [[ ! -e "$PREVIOUS_ORIGINAL_PREVENT_SLEEP" ]] || unlink "$PREVIOUS_ORIGINAL_PREVENT_SLEEP"
   rmdir "$PLIST_WORK_DIR" 2>/dev/null || true
   return "$exit_status"
@@ -220,6 +251,10 @@ trap cleanup EXIT
 # PlistBuddy treats quote characters as its own parser syntax. Replace this one
 # argument with plutil so the shell quotes survive literally in the plist.
 /usr/bin/plutil -replace ProgramArguments.2 -string '[[ -e "$1" ]] || exit 0; shift; exec "$@"' "$PLIST_TEMPLATE"
+# `plutil -replace` inserts before an array element on current macOS instead of
+# consuming PlistBuddy's quote-safe placeholder. Remove that shifted placeholder
+# so `$0` is the diagnostic command name and `$1` is the real enabled marker.
+/usr/bin/plutil -remove ProgramArguments.3 "$PLIST_TEMPLATE"
 
 plutil -lint "$PLIST_TEMPLATE"
 
@@ -253,12 +288,26 @@ if [[ -e "$PLIST_PATH" ]]; then
   HAD_PREVIOUS_PLIST=1
   install -m 0644 "$PLIST_PATH" "$PREVIOUS_PLIST"
 fi
+if [[ -e "$LEGACY_PLIST_PATH" ]]; then
+  HAD_LEGACY_PLIST=1
+  install -m 0644 "$LEGACY_PLIST_PATH" "$PREVIOUS_LEGACY_PLIST"
+fi
+if "$LAUNCHCTL_BIN" print "gui/$(id -u)/${LEGACY_LABEL}" >/dev/null 2>&1; then
+  HAD_LEGACY_JOB=1
+fi
 [[ ! -e "$ENABLED_PATH" ]] || HAD_ENABLED_MARKER=1
 
 MUTATION_STARTED=1
 [[ ! -e "$ENABLED_PATH" ]] || unlink "$ENABLED_PATH"
 "$LAUNCHCTL_BIN" bootout "gui/$(id -u)" "$PLIST_PATH" >/dev/null 2>&1 || true
+# Build 18 used a different label but the same enabled marker and executable.
+# Retire it before recreating the marker, otherwise both jobs can launch the
+# sender and create duplicate virtual displays after an in-place upgrade.
+"$LAUNCHCTL_BIN" disable "gui/$(id -u)/${LEGACY_LABEL}" >/dev/null 2>&1 || true
+"$LAUNCHCTL_BIN" bootout "gui/$(id -u)/${LEGACY_LABEL}" >/dev/null 2>&1 || true
+"$LAUNCHCTL_BIN" bootout "gui/$(id -u)" "$LEGACY_PLIST_PATH" >/dev/null 2>&1 || true
 stop_existing_sender
+[[ ! -e "$LEGACY_PLIST_PATH" ]] || unlink "$LEGACY_PLIST_PATH"
 install -m 0644 "$PLIST_TEMPLATE" "$PLIST_PATH"
 
 # A physical monitor follows the source Mac's display-sleep policy. Preserve

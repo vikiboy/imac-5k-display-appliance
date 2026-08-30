@@ -7,10 +7,12 @@
 > corrected the counter and defaulted to display synchronization; version 0.6
 > closed the drain-deadline race and failed closed on accounting invariants.
 > Version 0.6 then failed a short RSS gate; version 0.7 separated a redundant
-> power call from a bounded telemetry page ramp; version 0.8 replaces that ramp
-> with a 600-frame ring and is in an unperturbed one-hour qualification. The
-> original directional result is not perfect 60 Hz. This is not a production
-> release, support promise, or zero-latency claim.
+> power call from a bounded telemetry page ramp; version 0.8 replaced that ramp
+> with a 600-frame ring and completed an unperturbed one-hour qualification.
+> Version 0.9/build 19 adds display-lifecycle pausing and listener-first wake;
+> its component suite is green, while final paired physical acceptance remains
+> open. The original directional result is not perfect 60 Hz. This is not a
+> production release, support promise, or zero-latency claim.
 
 Apple's [technical specifications](https://support.apple.com/111969) list a
 5120 × 2880 P3 Retina panel and Thunderbolt 3 video **output** for the 27-inch
@@ -137,10 +139,11 @@ This branch also adds hardening that was not present in that form in the draft:
 - a quiet native waiting surface with distinct detected, starting, interrupted,
   and rejected states plus idle-only About/Quit controls; it has no animation,
   polling timer, or idle Metal workload;
-- startup sequencing that acquires the system-sleep assertion first, declares
-  remote user activity once, and waits briefly for an asleep built-in panel before
-  enforcing the native-5K gate; a slow wake retries in-process with bounded
-  backoff and unified diagnostics instead of entering a launchd restart loop;
+- a listener-first sleeping-panel broker that starts before Metal, wakes only
+  after a real HELLO arriving over both link-local ends of `bridge0`, ignores
+  discovery/path probes, and releases its temporary wake on every exit; the
+  sender uses six bounded internal retries across the broker-to-renderer
+  handoff for both manual and automatic Connect;
 - a presentation-epoch gate that keeps the waiting surface over a drawable
   Metal layer until macOS confirms a frame from the current connection was
   actually presented, preventing a stale desktop flash during reconnect;
@@ -159,10 +162,16 @@ This branch also adds hardening that was not present in that form in the draft:
   texture view or retire a slightly larger buffer on every frame;
 - permission preflight that requests Screen Recording once and suspends
   automatic retries when permission is absent;
+- a common-run-loop-mode control heartbeat, preventing menus or modal AppKit
+  tracking from turning a healthy parked session into a false 15-second
+  timeout;
 - transactional sender installation with a pre-LaunchServices marker gate,
   exact stable-path launch, exact-process uninstall, and rollback after an
   ambiguous launchd failure, preventing duplicate virtual displays and repeated
   permission prompts after monitor mode is stopped;
+- certificate-backed private local signing whose designated requirement stays
+  stable across rebuilds, with installers that reject ad-hoc packages before
+  they can invalidate Screen Recording consent;
 - Release builds, bounded debug logs, size-managed unified receiver diagnostics,
   and launchd restart throttling.
 
@@ -172,6 +181,24 @@ and a separately opt-in reversible screen-lock change. It does not terminate
 `ScreenSaverEngine` or fight macOS security UI. Screen Recording consent remains
 tied to the stable sender TCC identity. Those controls cannot unlock a session
 that is already locked.
+
+### The permission regression and the deployment fix
+
+The stream worked, then appeared to regress after a rebuild: macOS kept showing
+an enabled **TargetBridge** privacy row, yet each launch asked for Screen
+Recording again and no frames left the MacBook. The rebuilt app had been ad-hoc
+signed. In that mode the designated requirement is tied to the exact executable
+hash, so changing the executable created a different privacy identity even
+though the path, bundle identifier, icon, and visible switch looked unchanged.
+
+The durable local fix was to create one private Code Signing certificate in a
+dedicated keychain, sign only a staged bundle, verify that its designated
+requirement contains the fixed bundle identifier and certificate root, and
+install those exact bytes transactionally at the final path. Both the app and
+automatic-mode installers now reject ad-hoc signatures by default. The old
+privacy decision is removed only during this one-time migration; ordinary
+updates preserve the same certificate-backed requirement. This does not make a
+public developer app, notarize it, or send the private key anywhere.
 
 The intended cursor path is deliberately the standard macOS cursor captured by
 ScreenCaptureKit. The receiver hides the iMac's local cursor only for the live
@@ -237,7 +264,7 @@ The current commands and sanitized component-result summaries live under
 
 | Gate | Current result | What it proves |
 |---|---:|---|
-| Sender unit suite | 134/134 | Protocol framing, automation parsing, marker gating, profile and discovery behavior |
+| Sender unit suite | 141/141 | Protocol framing, automation parsing, marker gating, finite broker-handoff retry, profile and discovery behavior |
 | Sender appliance lifecycle fixtures | Passed | Signature/identity validation, single-authority launch, exact-process uninstall, reversible preferences, and ambiguous-bootstrap rollback |
 | Receiver network parser | 73 checks | Bounded packet framing and malformed lengths |
 | TBD2 codec | 290 checks | Exact CPU round-trip and malformed-blob rejection at 8 and 10 bits |
@@ -257,21 +284,25 @@ The current commands and sanitized component-result summaries live under
 | Direct Thunderbolt Bridge | **17.06 Gbit/s** | Application-level TCP throughput on the tested cable/setup |
 | Serial DPCM receiver | **58.718 reported FPS; superseded oracle** | p95 19.6 ms, p99 34.9 ms, maximum 122 ms; zero packet/parser/queue/GPU-command failures |
 | Two-slot DPCM receiver | **59.293 reported FPS; provisional candidate** | p95 19.0 ms, p99 34.0 ms, maximum 54.15 ms; zero packet/parser/queue/GPU-command failures; one added fixed 64 MiB slot |
+| Corrected v0.9 serial/two-slot A/B | **58.376 → 59.972 physically presented FPS** | The clean two-slot run presented 17,943 frames with one drop, 16.8 ms p99, 33.376 ms maximum gap, and zero malformed/queue/GPU/renderer/order errors; selected for the personal appliance |
 | Initial one-hour whole-frame resource baseline | **qualified failure** | No process, FD, thread, storage, heap-leak, or thermal-warning failure; receiver RSS rose 6.251 MiB/hour after warm-up, above the strict 2 MiB/hour gate |
 | Installed v0.5/build 8 one-hour run | **qualified failure** | Same bounded-resource gates passed and receiver heap leaks remained zero; RSS improved to +4.460 MiB/hour but still failed the 2 MiB/hour gate; dirty-worktree identity prevents release use |
 | Installed v0.6/build 10 run | **qualified early failure** | At 1,201 seconds the post-600-second receiver slope was +7.363 MiB/hour; the exact once-per-minute staircase matched a redundant user-activity renewal |
 | Installed v0.7/build 12 diagnostic | **not acceptance evidence** | Confirmed the wake token was not renewed, then isolated lazy page commitment in two first-ten-minute telemetry arrays; `heap`/`vmmap` deliberately perturbed the 540-second run |
 | Installed v0.8/build 13 one-hour run | **qualified failure, completed** | Sender RSS was essentially flat, threads/FDs/disk stayed flat, and no thermal warning appeared; receiver RSS rose +4.819 MiB/hour after 1,200 seconds. The securely locked iMac accepted 215,747 DPCM packets but completed zero presentations, proving that v0.8 kept doing expensive work behind an unavailable surface |
-| v0.9 lifecycle candidate | **component and live control-plane pass; paired stream pending** | Adds explicit receiver-surface/source-display epochs, an ordered acknowledgement barrier, fail-closed capture/GPU/audio pause, lock-aware startup, balanced cursor/power ownership, focus-stable live pixels, and fresh-current-generation presentation before unblank. Build 18 verified at 0% CPU / about 18 MiB while securely locked |
-| Cursor | **focus regression fixed; human pass pending** | Build 18 keeps local-cursor suppression across Screen Sharing/system-panel focus changes; an already-locked iMac still requires one physical unlock before visual acceptance |
-| Final qualification | **pending** | Stable sender installation/TCC approval plus paired lock/unlock, sleep/wake, cable reconnect, Dell coexistence, corrected cadence, active-surface RSS, and duplicate-cursor acceptance remain open |
+| v0.9/build 19 candidate | **component pass; paired Retina stream passed** | Retains the epoch-ordered capture/GPU/audio pause and focus-stable cursor contract, then adds a probe-inert direct-bridge HELLO wake broker, bounded manual/automatic sender handoff, common-mode heartbeat, continuous startup signal ownership, and certificate-backed local sender identity. Post-restart TCC, first frame, 5120 × 2880 DPCM presentation, and controlled reconnect passed |
+| Cursor | **physical one-cursor pass** | The component contract keeps local-cursor suppression across Screen Sharing/system-panel focus changes; the owner confirmed one cursor plus normal clicking/selection on the live iMac display. An already-locked iMac still requires one ordinary physical unlock |
+| Personal monitor acceptance | **passed** | Native arrangement, stable TCC, Dell coexistence, one cursor, source sleep/wake, and physical cable unplug/replug all passed; the stream restored automatically |
+| Broader release qualification | **pending** | The selected v0.9 overlap build still needs a one-hour active-surface RSS/thermal qualification and clean private CI before any broader production claim |
 
-The cadence numbers above came from the actual Radeon Pro 575, but their success
+The older 58.718/59.293 cadence numbers above came from the actual Radeon Pro 575, but their success
 counter incorrectly substituted callback time for a zero hardware presentation
 timestamp. They are directional only; the 34.0 ms overlap p99 also missed the
 project's 25 ms locked-60 gate. Numbers measured on the 2020
 iMac in PR #158 remain prior work, not our result. The full sanitized A/B and
 commands are in the [2026-08-30 result](../repro/imac-2017-5K/results/2026-08-30-serial-overlap-ab.md).
+The corrected synchronized result and its resource qualification are in the
+[v0.9 A/B record](../repro/imac-2017-5K/results/2026-08-30-v0.9-corrected-overlap-ab.md).
 
 ## Screenshots and physical evidence
 
@@ -293,8 +324,8 @@ The second project-owned image documents the controlled 2560 × 1440-point /
 It is a **MacBook source capture, not an iMac output screenshot**. macOS remote
 screen capture omits the receiver's shielding/Metal surface and shows the
 underlying iMac desktop, so such a capture cannot honestly document receiver
-output. The owner previously observed the physical output directly, but cursor
-acceptance is still pending the physical unlock described above.
+output. The owner physically observed the lossless Retina target and later
+confirmed one cursor on the live receiver.
 
 Additional sanitized evidence may be added only when it is owner-captured and
 its provenance is certain:
@@ -305,7 +336,7 @@ its provenance is certain:
    and device identifiers removed.
 4. An on-device photograph of the text/color/grid target on the iMac panel,
    clearly distinguished from the MacBook source capture above.
-5. The final overlap-candidate resource and reconnect results.
+5. The final overlap-candidate long-duration resource result.
 
 Screenshots are added only after redaction. Raw `system_profiler`, `.xcresult`,
 dSYM, and log files are not published because they contain user paths, device
@@ -318,7 +349,8 @@ The short version is:
 1. Use a 2017 27-inch 5K iMac (`iMac18,3`) and an Apple Silicon sender Mac.
 2. Connect them with a certified Thunderbolt 3-or-newer cable and enable
    Thunderbolt Bridge on both Macs.
-3. Build the sender and dedicated receiver from one immutable commit.
+3. Build the sender and dedicated receiver from one immutable commit; sign the
+   staged sender with one private, dedicated local Code Signing identity.
 4. Install each app at its final stable path before granting privacy permission.
 5. Grant Screen Recording to the sender once.
 6. Start the receiver, then the separate experimental 5K/60 FPS-target preset
@@ -327,7 +359,9 @@ The short version is:
    source/drawable 5120 × 2880 match, and Display P3 label.
 8. Run both receiver modes with the identical ten-minute motion target and
    compare `presentedTime` gaps and integrity counters.
-9. Run the overlap-candidate soak, unplug/replug, and sleep/wake recipes.
+9. Run the overlap-candidate soak, unplug/replug, and sleep/wake recipes. On the
+   owner's exact setup, unplug/replug and source sleep/wake restored the stream
+   automatically; repeat them when qualifying different hardware.
 10. Physically unlock an already-locked iMac once before the human cursor gate.
 
 The detailed build, verification, rollback, and evidence commands are in the
@@ -349,8 +383,11 @@ For this project, done is experiential, not rhetorical:
 - flat memory/file-descriptor/log-size trends during a sustained run;
 - acceptable measured CPU, GPU, temperature, and battery impact.
 
-Until all of those pass on the exact hardware, the honest label is “promising
-experimental appliance,” not “production-grade monitor replacement.”
+The owner's exact hardware now passes the daily-use monitor behavior, including
+automatic unplug/replug and sleep/wake recovery. The honest remaining limit is
+long-duration qualification: without the selected build's one-hour
+active-surface RSS run, this is a completed personal appliance, not a general
+production-grade monitor product.
 
 ## Where AI could help—and where it should not
 

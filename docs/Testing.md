@@ -32,8 +32,22 @@ the developer's preferences, or launchd domain.
 ```bash
 TargetBridge-Sender/tests/test_appliance_installer_contract.zsh \
   TargetBridge-Sender/scripts/install_targetbridge_5k_sender_launch_agent.sh
+TargetBridge-Sender/tests/test_local_app_installer.zsh
+/bin/zsh TargetBridge-Sender/tests/test_signing_identity_continuity.zsh
+TargetBridge-Sender/tests/test_stable_signing_contract.zsh
 TargetBridge-Sender/tests/test_sleep_preference_lifecycle.zsh
+/bin/zsh TargetBridge-Sender/tests/test_display_lifecycle_protocol.zsh
+TargetBridge-Sender/tests/test_heartbeat_common_mode.zsh
+TargetBridge-Sender/tests/test_pre_profile_reconnect_contract.zsh
 ```
+
+The local-app and stable-signing contracts prove that production installation
+rejects ad-hoc sender identities, preserves staged/installed executable bytes,
+and requires a certificate-backed designated requirement. The last two
+contracts keep the parked-session heartbeat active during AppKit
+event tracking and verify that the wake-broker handoff is finite, shared by GUI
+and automation, capture-free, and unable to reset the outer backoff before a
+real display profile is negotiated.
 
 ## 3. Receiver parser and appliance tests (C, Objective-C, and zsh)
 
@@ -105,7 +119,7 @@ The sender logs its connection lifecycle (dial target, interface, waiting/
 failed states, timeouts) to unified logging:
 
 ```bash
-log stream --predicate 'subsystem == "com.targetbridge.sender"'
+log stream --predicate 'subsystem == "com.vikiboy.imac5kdisplay.sender"'
 ```
 
 The receiver logs to stderr; under the LaunchAgent that lands in

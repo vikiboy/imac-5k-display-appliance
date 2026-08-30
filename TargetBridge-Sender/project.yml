@@ -1,6 +1,6 @@
 name: TargetBridge
 options:
-  bundleIdPrefix: com.targetbridge
+  bundleIdPrefix: com.vikiboy.imac5kdisplay
   deploymentTarget:
     macOS: "14.0"
 
@@ -23,7 +23,7 @@ targets:
     settings:
       base:
         PRODUCT_NAME: "TargetBridge"
-        PRODUCT_BUNDLE_IDENTIFIER: com.targetbridge.sender
+        PRODUCT_BUNDLE_IDENTIFIER: com.vikiboy.imac5kdisplay.sender
         # CFBundleDisplayName / NSHumanReadableCopyright / NSScreenCaptureUsageDescription now
         # live in TargetBridgeSupport/Info.plist (Xcode drops INFOPLIST_KEY_* usage strings once
         # INFOPLIST_FILE is set; the file is the single source of truth for those + the URL scheme).
@@ -47,7 +47,7 @@ targets:
       - target: TBDisplaySender
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.targetbridge.sender.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.vikiboy.imac5kdisplay.sender.tests
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: minimal
         GENERATE_INFOPLIST_FILE: YES

@@ -9,6 +9,29 @@ BUILD_DIR="${DERIVED_DATA_DIR}/Build/Products/Release"
 SOURCE_APP="${BUILD_DIR}/TargetBridge.app"
 DEST_DIR="${REPO_ROOT}/build"
 DEST_APP="${DEST_DIR}/TargetBridge.app"
+CODESIGN_IDENTITY="${TB_CODESIGN_IDENTITY:--}"
+CODESIGN_KEYCHAIN="${TB_CODESIGN_KEYCHAIN:-}"
+REQUIRE_STABLE_CODESIGN="${TB_REQUIRE_STABLE_CODESIGN:-0}"
+
+fail() {
+  print -u2 -- "$1"
+  exit "${2:-1}"
+}
+
+verify_packaged_signature() {
+  local app="$1"
+  local signature_info requirement
+  codesign --verify --deep --strict --verbose=2 "$app"
+  if [[ "$REQUIRE_STABLE_CODESIGN" == 1 ]]; then
+    signature_info="$(codesign -d --verbose=4 "$app" 2>&1)"
+    requirement="$(codesign -d -r- "$app" 2>&1)"
+    [[ "$signature_info" != *"Signature=adhoc"* ]] ||
+      fail "Stable sender build was ad-hoc signed; refusing a TCC-unstable package" 65
+    [[ "$requirement" == *'identifier "com.vikiboy.imac5kdisplay.sender"'* &&
+       "$requirement" == *"certificate root ="* ]] ||
+      fail "Stable sender build has no certificate-backed designated requirement" 65
+  fi
+}
 
 cd "$ROOT"
 
@@ -36,9 +59,19 @@ cp "$REPO_ROOT/NOTICE.md" "$DEST_APP/Contents/Resources/Legal/NOTICE.md"
 echo "Cleaning extended attributes..."
 xattr -cr "$DEST_APP" || true
 echo "Signing sender application..."
-codesign --force --deep --sign - "$DEST_APP"
-codesign --verify --deep --strict --verbose=2 "$DEST_APP"
+typeset -a sign_arguments
+sign_arguments=(--force --timestamp=none --sign "$CODESIGN_IDENTITY")
+if [[ -n "$CODESIGN_KEYCHAIN" ]]; then
+  [[ -f "$CODESIGN_KEYCHAIN" ]] || fail "Signing keychain not found: $CODESIGN_KEYCHAIN" 66
+  sign_arguments+=(--keychain "$CODESIGN_KEYCHAIN")
+fi
+if [[ "$REQUIRE_STABLE_CODESIGN" == 1 && "$CODESIGN_IDENTITY" == - ]]; then
+  fail "TB_REQUIRE_STABLE_CODESIGN=1 requires TB_CODESIGN_IDENTITY" 64
+fi
+codesign "${sign_arguments[@]}" "$DEST_APP"
+verify_packaged_signature "$DEST_APP"
 touch "$DEST_APP"
 
 echo "iMac 5K Display Sender built: $DEST_APP"
 echo "Local DerivedData: $DERIVED_DATA_DIR"
+echo "Code-signing identity: $CODESIGN_IDENTITY"

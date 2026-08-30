@@ -15,15 +15,22 @@ hardware, command, duration, and exit status are recorded together.
   `<sender-tb-ip>` / `<imac-tb-ip>`.
 - Use key-based SSH with a non-empty account password. Disable Remote Login when
   remote maintenance is no longer needed.
-- Install the sender at its final path before granting Screen Recording. An
-  ad-hoc rebuild changes its code identity and can require permission again.
+- Sign the sender with one private, dedicated local Code Signing identity, then
+  install it at its final path before granting Screen Recording. The installer
+  rejects ad-hoc signatures by default because their identity changes after a
+  rebuild.
 
 ## Build
 
 From the repository root:
 
 ```sh
+# Run this provisioning command once on a clean private workstation. It fails
+# closed rather than replacing an existing identity or TCC continuity.
+./TargetBridge-Sender/scripts/provision_targetbridge_5k_signing_identity.sh
 ./TargetBridge-Sender/scripts/build_targetbridge_sender_app.sh
+./TargetBridge-Sender/scripts/sign_targetbridge_5k_sender_app.sh \
+  build/TargetBridge.app
 ./TargetBridge-Receiver/scripts/build_targetbridge_5k_receiver_app.sh
 ```
 
@@ -55,7 +62,13 @@ The receiver must include `x86_64`; the 2017 iMac is Intel.
 
 TargetBridge-Sender/tests/test_appliance_installer_contract.zsh \
   TargetBridge-Sender/scripts/install_targetbridge_5k_sender_launch_agent.sh
+TargetBridge-Sender/tests/test_local_app_installer.zsh
+/bin/zsh TargetBridge-Sender/tests/test_signing_identity_continuity.zsh
+TargetBridge-Sender/tests/test_stable_signing_contract.zsh
 TargetBridge-Sender/tests/test_sleep_preference_lifecycle.zsh
+/bin/zsh TargetBridge-Sender/tests/test_display_lifecycle_protocol.zsh
+TargetBridge-Sender/tests/test_heartbeat_common_mode.zsh
+TargetBridge-Sender/tests/test_pre_profile_reconnect_contract.zsh
 
 (
   cd TargetBridge-Receiver/TBReceiverC
@@ -139,7 +152,7 @@ claimed as working. The appliance launch agent explicitly supplies
 `--large-cursor 0`, so a stale GUI preference cannot accidentally select that
 unsupported overlay after login or reconnect.
 
-Automated contract tests prove that build 18 keeps window-scoped cursor
+Automated contract tests prove that the build-19 candidate keeps window-scoped cursor
 suppression across ordinary AppKit/key-window focus changes, while the secure
 session-resign path still blanks and balances the process-global hide. They are
 not human visual acceptance. If the iMac session is already locked, physically
@@ -150,19 +163,79 @@ be a black screen with the iMac lock-screen cursor; that is macOS's secure-login
 layer, not receiver output. The receiver deliberately does not draw over or
 bypass it.
 
+## Sleeping-panel startup and reconnect
+
+Build 19 starts a wake-only listener when persistent appliance mode launches
+without an awake native 5K surface. Bonjour discovery and throughput probes do
+not wake the panel. Only a real HELLO whose local and peer addresses are both
+link-local—and whose iMac endpoint is the current `bridge0` address—requests
+one bounded public user-activity wake. The temporary socket then closes and the
+Sender retries internally into the full receiver at these finite delays:
+`0.25, 0.5, 1, 2, 2, 2` seconds.
+
+That retry works for both manual and automatic Connect, allocates no capture,
+virtual-display, encoder, or frame-pipeline resources, and is cancelled by a
+received profile or Stop. Recovery-only time cannot reset the outer automatic-
+reconnect backoff. A source-display sleep releases both display power IDs;
+source wake recreates the complete bounded wake/display pair so a panel that
+slept during the interval does not remain black.
+
+Component tests cover the packet classifier, two-sided bridge check, deadlines,
+finite retry policy, automation interaction, signal handoff, 25 reconnects,
+and source sleep/wake power ownership. On the exact hardware, the normal
+physical unlock, one-cursor check, source sleep/wake, receiver restart, and
+cable unplug/replug all restored a fresh live 5K surface. A locked iMac still
+requires its ordinary physical unlock; the app never bypasses it.
+
 ## Install and rollback
 
-Install the sender at its final path on the MacBook before granting Screen
-Recording:
+Install the reviewed sender bytes at their final path on the MacBook before
+granting Screen Recording. For an upgrade, disable the old per-user job first;
+the app installer deliberately refuses to replace a running or automatically
+enabled copy:
 
 ```sh
-mkdir -p "$HOME/Applications"
-test ! -e "$HOME/Applications/TargetBridge 5K Sender.app"
-ditto build/TargetBridge.app \
+./TargetBridge-Sender/scripts/uninstall_targetbridge_5k_sender_launch_agent.sh \
+  "$HOME/Applications/TargetBridge 5K Sender.app" 2>/dev/null || true
+./TargetBridge-Sender/scripts/install_targetbridge_5k_sender_app.sh \
+  build/TargetBridge.app \
   "$HOME/Applications/TargetBridge 5K Sender.app"
+codesign --verify --deep --strict --verbose=2 \
+  "$HOME/Applications/TargetBridge 5K Sender.app"
+open -n "$HOME/Applications/TargetBridge 5K Sender.app"
+```
+
+The signing helper uses the dedicated private keychain under
+`~/Library/Application Support/iMac 5K Display/Signing`, refuses to re-sign the
+installed app in place, and verifies a certificate-backed designated
+requirement. The installer transactionally swaps the bundle, verifies both architectures,
+preserves the signed executable bytes, checks their SHA-256 before and after
+the swap, registers only the stable path, and does **not** launch the app. If
+macOS blocks this self-built local app, use **System Settings → Privacy &
+Security → Open Anyway** once for this exact stable copy. Grant **Screen &
+System Audio Recording** to **iMac 5K Display Sender**, quit that stable app
+completely, and then enable automatic monitor mode. The launch agent performs
+the required reopen at the same stable path:
+
+```sh
 ./TargetBridge-Sender/scripts/install_targetbridge_5k_sender_launch_agent.sh \
   "$HOME/Applications/TargetBridge 5K Sender.app"
 ```
+
+The privacy pane may label this source-compatible bundle **TargetBridge**. Use
+the project 5K monitor icon and exact installed path to distinguish it. On a
+clean first installation, if macOS does not create a new row after the stable
+app's first request, use **+** and Command–Shift–G to add exactly:
+
+```text
+~/Applications/TargetBridge 5K Sender.app
+```
+
+Approve that newly added row once, restart the Mac once if the old TCC state
+remains cached, then reopen the same installed copy. The accepted machine can
+show two inherited **TargetBridge** labels; leave both alone. Do not remove or
+reset a working row. Repeated prompts fail acceptance; do not work around them
+by launching another build or temporary copy.
 
 For a first receiver install, package the universal app on the MacBook and copy
 both it and the dedicated installer to the iMac. Replace `<imac-ssh>` only with
@@ -206,13 +279,17 @@ ssh '<imac-ssh>' \
 
 The installers add per-user launchd jobs; they do not install a kernel
 extension, display driver, firmware, or system-wide daemon. The current personal
-build is ad-hoc signed, so another Mac still needs one explicit Screen Recording
-grant at the sender's final path. A Developer ID/notarized release is separate
-distribution work, not hidden behind the word “automatic.”
+build is signed by the owner's private local certificate and needs one explicit
+Screen Recording grant at the sender's final path. It is not submitted,
+notarized, published, or distributed as a developer app. The key remains in a
+dedicated local keychain. The build, app installer, and launch-agent installer
+all fail closed if an ad-hoc sender is supplied, preventing a later rebuild from
+silently reintroducing the repeated-permission regression.
 
-The final sender path and bundle identity are part of the macOS TCC contract:
-install once, grant Screen Recording to that installed app, and do not use an
-ad-hoc build at a changing path for acceptance. The receiver installer also:
+The final sender path and `com.vikiboy.imac5kdisplay.sender` bundle identity are
+part of the macOS TCC contract: sign at staging, install once, grant Screen
+Recording to that installed app, and do not sign or launch a disposable build
+copy for acceptance. The receiver installer also:
 
 - creates a per-user launch agent for foreground AppKit launch;
 - disables the local screen saver while installed and preserves the original
@@ -465,7 +542,7 @@ consume and decode full-rate frames while completing no presentation. Its
 measurements and lifecycle disposition are in
 [`results/2026-08-30-v0.8-resource-soak.md`](results/2026-08-30-v0.8-resource-soak.md).
 The resulting version 0.9 lifecycle candidate, exact binary hashes, component
-results, live frame-free control-plane probe, and still-open human gates are in
+results, live frame-free control-plane probe, and physical lifecycle results are in
 [`results/2026-08-30-v0.9-lifecycle-candidate.md`](results/2026-08-30-v0.9-lifecycle-candidate.md).
 The first hardware presentation A/B is in
 [`results/2026-08-30-serial-overlap-ab.md`](results/2026-08-30-serial-overlap-ab.md).
@@ -473,6 +550,7 @@ It selects the fixed two-slot receiver provisionally, but its presentation
 oracle is superseded and must be repeated with the final candidate.
 The bounded
 [20-minute resource follow-up](results/2026-08-30-overlap-resource-followup.md)
-passes its selected short-run slope window but does not replace the pending
-one-hour corrected-candidate resource, reconnect, sleep/wake, or human cursor
-acceptance gates.
+and the clean selected-mode five-minute sample pass their bounded-resource
+checks. Physical reconnect, source sleep/wake, and human cursor gates passed;
+the samples do not replace the still-open one-hour corrected-candidate RSS
+qualification.

@@ -75,54 +75,129 @@ int tb_power_lifecycle_start(struct tb_power_lifecycle *lifecycle) {
     return 0;
 }
 
-int tb_power_lifecycle_begin_session(struct tb_power_lifecycle *lifecycle) {
+int tb_power_lifecycle_hold_display_awake(
+    struct tb_power_lifecycle *lifecycle) {
     if (!lifecycle ||
         lifecycle->system_sleep_assertion == kIOPMNullAssertionID) {
         return -1;
     }
 
-    /* A previous partially closed session must not leak an assertion into the
-     * next connection. Both release helpers are idempotent. */
-    tb_power_lifecycle_end_session(lifecycle);
-    if (lifecycle->display_sleep_assertion != kIOPMNullAssertionID ||
-        lifecycle->user_activity_assertion != kIOPMNullAssertionID) {
-        /* Fail closed instead of overwriting an ID whose release failed. */
-        return -1;
+    if (lifecycle->display_sleep_assertion != kIOPMNullAssertionID) {
+        if (lifecycle->display_awake_held) return 0;
+        /* A failed create may still return an ID. Rollback normally releases
+         * it immediately; retry cleanup here without ever overwriting it. */
+        if (!tb_power_release(
+                lifecycle,
+                &lifecycle->display_sleep_assertion,
+                TB_POWER_LOG_DISPLAY_RELEASE,
+                "display-idle-assertion-release")) {
+            return -1;
+        }
     }
 
     IOPMAssertionID displayAssertion = kIOPMNullAssertionID;
-    IOReturn result = IOPMAssertionCreateWithName(
+    const IOReturn result = IOPMAssertionCreateWithName(
         kIOPMAssertionTypePreventUserIdleDisplaySleep,
         kIOPMAssertionLevelOn,
         CFSTR("TargetBridge active display session"),
         &displayAssertion);
     lifecycle->display_sleep_assertion = (uint32_t)displayAssertion;
+    lifecycle->display_awake_held = 0;
     if (result != kIOReturnSuccess ||
         displayAssertion == kIOPMNullAssertionID) {
         tb_power_log_error_once(
             lifecycle, TB_POWER_LOG_DISPLAY_CREATE,
             "display-idle-assertion-create", result);
-        tb_power_lifecycle_end_session(lifecycle);
+        tb_power_release(
+            lifecycle,
+            &lifecycle->display_sleep_assertion,
+            TB_POWER_LOG_DISPLAY_RELEASE,
+            "display-idle-assertion-release");
+        return -1;
+    }
+    lifecycle->display_awake_held = 1;
+    return 0;
+}
+
+int tb_power_lifecycle_request_panel_wake(
+    struct tb_power_lifecycle *lifecycle) {
+    if (!lifecycle ||
+        lifecycle->system_sleep_assertion == kIOPMNullAssertionID) {
         return -1;
     }
 
-    /* This is a one-shot remote wake signal. The display assertion above owns
-     * the long-lived awake state; repeating DeclareUserActivity on every
-     * heartbeat is redundant and can cause framework allocation churn. */
+    if (lifecycle->user_activity_assertion != kIOPMNullAssertionID) {
+        if (lifecycle->panel_wake_requested) return 0;
+        /* As above, retry rollback of an unexpected ID returned by a failed
+         * IOKit call before issuing a new request. */
+        if (!tb_power_release(
+                lifecycle,
+                &lifecycle->user_activity_assertion,
+                TB_POWER_LOG_ACTIVITY_RELEASE,
+                "user-activity-assertion-release")) {
+            return -1;
+        }
+    }
+
+    /* This is a one-shot remote wake signal. A display assertion, when held,
+     * owns the long-lived awake state; repeating DeclareUserActivity on every
+     * heartbeat or duplicate HELLO is redundant and can cause allocation
+     * churn inside the power-management framework. */
     IOPMAssertionID activityAssertion =
         kIOPMNullAssertionID;
-    result = IOPMAssertionDeclareUserActivity(
+    const IOReturn result = IOPMAssertionDeclareUserActivity(
         CFSTR("TargetBridge display session active"),
         kIOPMUserActiveRemote,
         &activityAssertion);
     /* Retain even an unexpectedly populated failure result so rollback can
      * release every ID returned by IOKit. */
     lifecycle->user_activity_assertion = (uint32_t)activityAssertion;
+    lifecycle->panel_wake_requested = 0;
     if (result != kIOReturnSuccess ||
         activityAssertion == kIOPMNullAssertionID) {
         tb_power_log_error_once(
             lifecycle, TB_POWER_LOG_USER_ACTIVITY,
             "panel-wake-user-activity", result);
+        tb_power_release(
+            lifecycle,
+            &lifecycle->user_activity_assertion,
+            TB_POWER_LOG_ACTIVITY_RELEASE,
+            "user-activity-assertion-release");
+        return -1;
+    }
+    lifecycle->panel_wake_requested = 1;
+    return 0;
+}
+
+int tb_power_lifecycle_begin_session(struct tb_power_lifecycle *lifecycle) {
+    if (!lifecycle ||
+        lifecycle->system_sleep_assertion == kIOPMNullAssertionID) {
+        return -1;
+    }
+
+    const bool hasReusablePreSessionWake =
+        lifecycle->user_activity_assertion != kIOPMNullAssertionID &&
+        lifecycle->panel_wake_requested &&
+        lifecycle->display_sleep_assertion == kIOPMNullAssertionID;
+
+    /* Preserve a successful listener-first wake long enough to promote it to
+     * a real session. Every other prior/partial state is a bounded session to
+     * close before creating a fresh assertion pair. */
+    if (!hasReusablePreSessionWake) {
+        tb_power_lifecycle_end_session(lifecycle);
+    }
+    if (lifecycle->display_sleep_assertion != kIOPMNullAssertionID ||
+        (lifecycle->user_activity_assertion != kIOPMNullAssertionID &&
+         !lifecycle->panel_wake_requested)) {
+        /* Fail closed instead of overwriting an ID whose release failed. */
+        return -1;
+    }
+
+    if (tb_power_lifecycle_hold_display_awake(lifecycle) != 0) {
+        tb_power_lifecycle_end_session(lifecycle);
+        return -1;
+    }
+    if (tb_power_lifecycle_request_panel_wake(lifecycle) != 0) {
         tb_power_lifecycle_end_session(lifecycle);
         return -1;
     }
@@ -131,11 +206,13 @@ int tb_power_lifecycle_begin_session(struct tb_power_lifecycle *lifecycle) {
 
 void tb_power_lifecycle_end_session(struct tb_power_lifecycle *lifecycle) {
     if (!lifecycle) return;
+    lifecycle->panel_wake_requested = 0;
     tb_power_release(
         lifecycle,
         &lifecycle->user_activity_assertion,
         TB_POWER_LOG_ACTIVITY_RELEASE,
         "user-activity-assertion-release");
+    lifecycle->display_awake_held = 0;
     tb_power_release(
         lifecycle,
         &lifecycle->display_sleep_assertion,

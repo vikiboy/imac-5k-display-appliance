@@ -1,13 +1,15 @@
 #!/bin/zsh
 set -euo pipefail
 
-LABEL="com.targetbridge.sender5k"
+LABEL="com.vikiboy.imac5kdisplay.sender"
+LEGACY_LABEL="com.targetbridge.sender5k"
 APP_PATH="${1:-${HOME}/Applications/TargetBridge 5K Sender.app}"
 EXECUTABLE_PATH="${APP_PATH}/Contents/MacOS/TargetBridge"
 PLIST_PATH="${HOME}/Library/LaunchAgents/${LABEL}.plist"
+LEGACY_PLIST_PATH="${HOME}/Library/LaunchAgents/${LEGACY_LABEL}.plist"
 ENABLED_PATH="${HOME}/Library/Application Support/TargetBridge/Sender/enabled"
 STATE_DIR="${HOME}/Library/Application Support/TargetBridge/Sender"
-PREFERENCE_DOMAIN="com.targetbridge.sender"
+PREFERENCE_DOMAIN="com.vikiboy.imac5kdisplay.sender"
 PREVENT_DISPLAY_SLEEP_KEY="fd.tbdisplaysender.preventDisplaySleep"
 ORIGINAL_PREVENT_SLEEP_PATH="${STATE_DIR}/prevent-display-sleep.original"
 DEFAULTS_BIN="${TB_DEFAULTS_BIN:-/usr/bin/defaults}"
@@ -96,9 +98,13 @@ fi
 
 "$LAUNCHCTL_BIN" disable "gui/$(id -u)/${LABEL}" >/dev/null 2>&1 || true
 "$LAUNCHCTL_BIN" bootout "gui/$(id -u)" "$PLIST_PATH" >/dev/null 2>&1 || true
+"$LAUNCHCTL_BIN" disable "gui/$(id -u)/${LEGACY_LABEL}" >/dev/null 2>&1 || true
+"$LAUNCHCTL_BIN" bootout "gui/$(id -u)/${LEGACY_LABEL}" >/dev/null 2>&1 || true
+"$LAUNCHCTL_BIN" bootout "gui/$(id -u)" "$LEGACY_PLIST_PATH" >/dev/null 2>&1 || true
 [[ ! -e "$ENABLED_PATH" ]] || unlink "$ENABLED_PATH"
 stop_installed_sender
 [[ ! -e "$PLIST_PATH" ]] || unlink "$PLIST_PATH"
+[[ ! -e "$LEGACY_PLIST_PATH" ]] || unlink "$LEGACY_PLIST_PATH"
 restore_prevent_display_sleep
 
 echo "iMac 5K Display Sender monitor mode disabled. The app and display arrangement were left installed; the prior display-sleep preference was restored when unchanged."

@@ -1249,7 +1249,7 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         let isRelativeToMainDisplay: Bool
     }
 
-    private static let extendedArrangementDefaultsPrefix = "com.targetbridge.sender.extended-arrangement"
+    private static let extendedArrangementDefaultsPrefix = "com.vikiboy.imac5kdisplay.sender.extended-arrangement"
 
     private static func normalizedPng(for image: NSImage) -> Data? {
         let targetSize = NSSize(width: 32, height: 32)
@@ -1575,6 +1575,27 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
     /// stale/auxiliary peer cannot leave automatic appliance mode falsely
     /// "connected" forever.
     private var displayProfileTimeoutWorkItem: DispatchWorkItem?
+    /// Finite, control-plane-only recovery for the receiver startup broker:
+    /// that broker accepts HELLO to wake the panel, then closes so the full
+    /// display listener can take over. This is intentionally independent from
+    /// appliance automation so a manual GUI Connect gets the same recovery.
+    private var preProfileReconnectPolicy = TBPreProfileReconnectPolicy()
+    private var preProfileReconnectWorkItem: DispatchWorkItem?
+    private var preProfileReconnectGeneration: UInt64 = 0
+    /// Lets appliance automation distinguish the intentional broker→listener
+    /// handoff gap from a terminal disconnect. No capture/display resources
+    /// exist while this is true and `isConnected` is false.
+    var isRecoveringPreProfileConnection: Bool {
+        activeProfile == nil &&
+            preProfileReconnectPolicy.isArmed &&
+            (connection != nil || preProfileReconnectWorkItem != nil)
+    }
+    /// TCP readiness and broker recovery are not yet a usable monitor session.
+    /// Automation uses this explicit profile gate before resetting its outer
+    /// reconnect backoff after a stable run.
+    var hasNegotiatedDisplayProfile: Bool {
+        activeProfile != nil
+    }
     /// Name of the local interface the current connect attempt is bound to
     /// (e.g. "bridge0"), resolved when dialing. Diagnostic context only.
     private var connectInterfaceName: String?
@@ -1966,6 +1987,14 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
 
     func connect() {
         guard connection == nil, !receiverIP.isEmpty, !localInterfaceIP.isEmpty else { return }
+        connect(preservingPreProfileReconnectPolicy: false)
+    }
+
+    private func connect(preservingPreProfileReconnectPolicy: Bool) {
+        guard connection == nil, !receiverIP.isEmpty, !localInterfaceIP.isEmpty else { return }
+        if !preservingPreProfileReconnectPolicy {
+            cancelPreProfileReconnect(resetPolicy: true)
+        }
         connectTimeoutWorkItem?.cancel()
         connectTimeoutWorkItem = nil
         recvBuffer.removeAll(keepingCapacity: false)
@@ -2028,6 +2057,9 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
                     self.connectTimeoutWorkItem?.cancel()
                     self.connectTimeoutWorkItem = nil
                     self.isConnected = true
+                    if !self.isCableTestConnection, self.activeProfile == nil {
+                        _ = self.preProfileReconnectPolicy.handle(.tcpReadyWithoutProfile)
+                    }
                     TBLog.connection.info("connect: ready — \(self.receiverIP, privacy: .public) via \(self.connectInterfaceName ?? "?", privacy: .public)")
                     self.setStatus(.waitingDisplayProfile)
                     self.startHeartbeat()
@@ -2055,6 +2087,12 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
                         lastNetworkState: nil
                     )
                     TBLog.connection.error("connect: failed — \(error.localizedDescription, privacy: .public); \(detail, privacy: .public)")
+                    if self.requestPreProfileReconnect(
+                        after: .retryConnectionFailedOrTimedOut,
+                        teardownReason: "sender_pre_profile_connect_failed"
+                    ) {
+                        return
+                    }
                     self.setStatus(.connectionFailed("\(error.localizedDescription) — \(detail)"))
                     self.stop(resetStatusTo: nil)
                 case .cancelled:
@@ -2218,6 +2256,7 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         resetStatusTo status: TBDisplaySenderStatusState?,
         persistArrangement: Bool = true,
         teardownReason: String = "sender_internal_stop",
+        preservePreProfileReconnectPolicy: Bool = false,
         teardownCompletion: (@MainActor @Sendable () -> Void)? = nil
     ) {
         let connectionToClose = connection
@@ -2229,6 +2268,9 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
         connectTimeoutWorkItem = nil
         displayProfileTimeoutWorkItem?.cancel()
         displayProfileTimeoutWorkItem = nil
+        if !preservePreProfileReconnectPolicy {
+            cancelPreProfileReconnect(resetPolicy: true)
+        }
         heartbeatTimer?.invalidate()
         heartbeatTimer = nil
         firstFrameTimer?.invalidate()
@@ -2296,6 +2338,66 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
             after: pipelineStopOutcome,
             context: "full pipeline stop"
         )
+    }
+
+    /// Recover the receiver's intentional wake-broker handoff without relying
+    /// on LaunchAgent automation. Only a connection that previously reached
+    /// TCP ready without a display profile can enter this path.
+    @discardableResult
+    private func requestPreProfileReconnect(
+        after event: TBPreProfileReconnectPolicy.Event,
+        teardownReason: String
+    ) -> Bool {
+        guard activeProfile == nil, !isCableTestConnection else { return false }
+
+        switch preProfileReconnectPolicy.handle(event) {
+        case .none:
+            return false
+
+        case .exhausted:
+            TBLog.connection.error(
+                "connect: pre-profile reconnect budget exhausted after \(TBPreProfileReconnectPolicy.retryDelays.count, privacy: .public) attempts"
+            )
+            return false
+
+        case .retry(let retry):
+            TBLog.connection.info(
+                "connect: receiver wake handoff; retry \(retry.attempt, privacy: .public)/\(retry.maximumAttempts, privacy: .public) in \(retry.delay, privacy: .public)s"
+            )
+            setStatus(.connecting(receiverDisplayName))
+            stop(
+                resetStatusTo: nil,
+                persistArrangement: false,
+                teardownReason: teardownReason,
+                preservePreProfileReconnectPolicy: true
+            )
+
+            preProfileReconnectGeneration &+= 1
+            let generation = preProfileReconnectGeneration
+            let workItem = DispatchWorkItem { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.preProfileReconnectGeneration == generation,
+                          self.connection == nil,
+                          self.activeProfile == nil
+                    else { return }
+                    self.preProfileReconnectWorkItem = nil
+                    self.connect(preservingPreProfileReconnectPolicy: true)
+                }
+            }
+            preProfileReconnectWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + retry.delay, execute: workItem)
+            return true
+        }
+    }
+
+    private func cancelPreProfileReconnect(resetPolicy: Bool) {
+        preProfileReconnectGeneration &+= 1
+        preProfileReconnectWorkItem?.cancel()
+        preProfileReconnectWorkItem = nil
+        if resetPolicy {
+            _ = preProfileReconnectPolicy.handle(.stopped)
+        }
     }
 
     /// A quarantined C encoder intentionally survives Swift teardown because a
@@ -2571,8 +2673,17 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
                     self.drainPackets()
                 }
                 if error != nil || isDone {
+                    if self.activeProfile == nil,
+                       self.requestPreProfileReconnect(
+                           after: .connectionEndedBeforeProfile,
+                           teardownReason: "sender_pre_profile_connection_ended"
+                       ) {
+                        return
+                    }
                     if let error {
                         self.setStatus(.connectionClosed(error.localizedDescription))
+                    } else if self.activeProfile == nil {
+                        self.setStatus(.connectionClosed("Receiver closed before providing a display profile"))
                     } else if case .startingCapture = self.statusState {
                         self.setStatus(.receiverClosedDuringCapture)
                     } else if case .captureActive = self.statusState {
@@ -3012,6 +3123,8 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
 
         displayProfileTimeoutWorkItem?.cancel()
         displayProfileTimeoutWorkItem = nil
+        cancelPreProfileReconnect(resetPolicy: false)
+        _ = preProfileReconnectPolicy.handle(.displayProfileReceived)
         activeProfile = profile
         if profile.supportsDisplayLifecycle == true {
             // A capable receiver must explicitly publish its current Aqua
@@ -4468,11 +4581,18 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
 
     private func startHeartbeat() {
         heartbeatTimer?.invalidate()
-        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.sendHeartbeat()
             }
         }
+        heartbeatTimer = timer
+        // The receiver deliberately expires a peer after 15 seconds without
+        // traffic. A default-mode timer pauses while a menu, modal panel, or
+        // event-tracking loop owns AppKit's run loop, which can make a healthy
+        // parked display session look dead. Common mode keeps the inexpensive
+        // two-second control-plane heartbeat alive without starting capture.
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func startFirstFrameWatchdog(for attempt: UInt64) {
@@ -4534,6 +4654,12 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
                     lastNetworkState: self.lastConnectionStateDetail
                 )
                 TBLog.connection.error("connect: timed out — \(detail, privacy: .public)")
+                if self.requestPreProfileReconnect(
+                    after: .retryConnectionFailedOrTimedOut,
+                    teardownReason: "sender_pre_profile_connect_timeout"
+                ) {
+                    return
+                }
                 self.setStatus(.connectionFailed("\(timeoutMessage) — \(detail)"))
                 self.stop(resetStatusTo: nil)
             }
@@ -4566,6 +4692,12 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
                 TBLog.connection.error(
                     "connect: receiver profile timed out after TCP became ready — \(detail, privacy: .public)"
                 )
+                if self.requestPreProfileReconnect(
+                    after: .displayProfileTimedOut,
+                    teardownReason: "sender_pre_profile_timeout"
+                ) {
+                    return
+                }
                 self.setStatus(.connectionFailed(
                     "Receiver did not provide a display profile within 5 seconds — \(detail)"
                 ))

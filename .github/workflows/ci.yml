@@ -38,10 +38,15 @@ jobs:
 
       - name: Test Appliance Installer Lifecycle
         run: |
+          TargetBridge-Sender/tests/test_local_app_installer.zsh
+          /bin/zsh TargetBridge-Sender/tests/test_signing_identity_continuity.zsh
+          TargetBridge-Sender/tests/test_stable_signing_contract.zsh
           TargetBridge-Sender/tests/test_appliance_installer_contract.zsh \
             TargetBridge-Sender/scripts/install_targetbridge_5k_sender_launch_agent.sh
           TargetBridge-Sender/tests/test_sleep_preference_lifecycle.zsh
           /bin/zsh TargetBridge-Sender/tests/test_display_lifecycle_protocol.zsh
+          /bin/zsh TargetBridge-Sender/tests/test_heartbeat_common_mode.zsh
+          /bin/zsh TargetBridge-Sender/tests/test_pre_profile_reconnect_contract.zsh
 
       - name: Run Sender Unit Tests
         run: |

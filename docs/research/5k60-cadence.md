@@ -1,7 +1,7 @@
 # Research note: what "5K60" means and how to close the cadence gap
 
-Display restart/wake is a separate control-plane problem. Its researched but
-unshipped design is documented in
+Display restart/wake is a separate control-plane problem. Its implemented
+design and physical acceptance are documented in
 [`sleeping-panel-control-plane.md`](sleeping-panel-control-plane.md).
 
 ## Current evidence (2026-08-30)
@@ -22,14 +22,15 @@ directional evidence:
 | Serial | 58.718 | 19.6 ms | 34.9 ms | 122 ms | 0 |
 | Two-slot overlap | **59.293** | **19.0 ms** | **34.0 ms** | **54.15 ms** | 0 |
 
-Overlap adds one fixed 64 MiB receive slot and is the provisional candidate for
-this exact 2017 iMac. Version 0.5 records zero/invalid timestamps as presentation
+Overlap adds one fixed 64 MiB receive slot. Version 0.5 records zero/invalid timestamps as presentation
 drops, keeps the first-frame cover in place until a real presentation, and
 defaults `CAMetalLayer` to display-synchronized presentation. Version 0.6 also
 re-evaluates the final callback snapshot at the drain deadline and treats an
-accounting invariant as a fatal renderer state. The A/B must be
-repeated before either row can establish 60 unique presented frames every
-second. This repository uses:
+accounting invariant as a fatal renderer state. The corrected five-minute A/B
+selected overlap at 59.972 presented FPS from a 59.983 Hz source, one drop,
+16.8 ms p99, and zero integrity errors; see the
+[corrected hardware record](../repro/imac-2017-5K/results/2026-08-30-v0.9-corrected-overlap-ab.md).
+This repository uses:
 
 - **5K60 mode** for 5120 × 2880 on a 60 Hz display mode; and
 - **locked 5K60 cadence** only for at least 58.5 unique presented frames per

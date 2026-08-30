@@ -6,10 +6,10 @@ display setup.
 
 Before changing visibility:
 
-- [ ] Bind the provisional two-slot result to immutable sender/receiver hashes,
-      repeat its one-hour resource soak, and finish reconnect, sleep/wake, and
-      human cursor acceptance after physical unlock. Do not market the current
-      A/B as perfect 60 Hz.
+- [ ] Repeat the selected two-slot build's one-hour active-surface resource
+      soak. Sender/receiver hashes, reconnect, source sleep/wake, and human
+      cursor acceptance are recorded; do not market 59.972 FPS as perfect or
+      zero-latency 60 Hz.
 - [ ] Replace the current arrangement evidence with a clean recapture if any
       unrelated window text remains visible, then update
       `docs/ASSET-PROVENANCE.md`.

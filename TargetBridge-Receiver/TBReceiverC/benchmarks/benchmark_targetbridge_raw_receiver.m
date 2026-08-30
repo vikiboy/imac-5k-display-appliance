@@ -19,6 +19,7 @@
 #include <dispatch/dispatch.h>
 #include <dns_sd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <ifaddrs.h>
 #include <math.h>
 #include <net/if.h>
@@ -48,6 +49,18 @@ enum {
     TB_MAX_PACKET_LENGTH = TB_PRE_SESSION_MAX_PACKET_LENGTH,
     TB_SERVE_PEER_IDLE_TIMEOUT_SECONDS = 15
 };
+
+/* The pre-surface startup broker runs before NSApplication's main event loop,
+ * so its termination path cannot depend on a main-queue dispatch source. The
+ * temporary handler does the only async-signal-safe operation required here:
+ * store the signal number. Every broker poll/read has an absolute deadline and
+ * observes this flag before continuing. The normal receiver replaces these
+ * handlers with its shutdown gate once the drawable surface exists. */
+static volatile sig_atomic_t g_startup_termination_signal = 0;
+
+static void record_startup_termination_signal(int signalNumber) {
+    g_startup_termination_signal = signalNumber;
+}
 
 struct tb_receiver_lifecycle_snapshot {
     pthread_mutex_t lock;
@@ -919,6 +932,10 @@ static bool read_exact_before(int fd,
                               CFTimeInterval deadline) {
     uint8_t *cursor = (uint8_t *)buffer;
     while (length > 0) {
+        if (g_startup_termination_signal != 0) {
+            errno = ECANCELED;
+            return false;
+        }
         const CFTimeInterval remaining = deadline - CACurrentMediaTime();
         if (remaining <= 0.0) {
             errno = ETIMEDOUT;
@@ -934,7 +951,12 @@ static bool read_exact_before(int fd,
         int ready;
         do {
             ready = poll(&descriptor, 1, waitMilliseconds);
-        } while (ready < 0 && errno == EINTR);
+        } while (ready < 0 && errno == EINTR &&
+                 g_startup_termination_signal == 0);
+        if (g_startup_termination_signal != 0) {
+            errno = ECANCELED;
+            return false;
+        }
         if (ready == 0) {
             errno = ETIMEDOUT;
             return false;
@@ -953,19 +975,6 @@ static bool read_exact_before(int fd,
     return true;
 }
 
-static bool discard_exact(int fd, size_t length) {
-    /* Match the sender's normal path-probe chunk so a 17+ Gbit/s link is not
-     * artificially capped by thousands of tiny receive syscalls. */
-    uint8_t scratch[256 * 1024];
-    while (length > 0) {
-        const size_t chunk = length < sizeof(scratch)
-            ? length : sizeof(scratch);
-        if (!read_exact(fd, scratch, chunk)) return false;
-        length -= chunk;
-    }
-    return true;
-}
-
 static bool discard_exact_before(int fd,
                                  size_t length,
                                  CFTimeInterval deadline) {
@@ -977,6 +986,47 @@ static bool discard_exact_before(int fd,
         length -= chunk;
     }
     return true;
+}
+
+/* Consume exactly one bounded pre-session conversation. Discovery and path
+ * probes are auxiliary connections and must never be mistaken for permission
+ * to wake the panel. The same classifier is used by both the listener-first
+ * startup broker and the normal full receiver admission path. */
+static bool receive_pre_session_hello_before(
+    int peer,
+    CFTimeInterval deadline) {
+    bool probeStarted = false;
+    for (;;) {
+        uint8_t lengthBytes[4];
+        errno = 0;
+        if (!read_exact_before(
+                peer, lengthBytes, sizeof(lengthBytes), deadline)) {
+            return false;
+        }
+
+        const uint32_t packetLength = load_be32(lengthBytes);
+        if (packetLength < 1 ||
+            packetLength > TB_PRE_SESSION_MAX_PACKET_LENGTH) {
+            return false;
+        }
+
+        uint8_t packetType = 0;
+        if (!read_exact_before(peer, &packetType, 1, deadline)) {
+            return false;
+        }
+
+        const enum tb_pre_session_action action = tb_pre_session_classify(
+            probeStarted, packetLength, packetType);
+        if (action == TB_PRE_SESSION_REJECT) return false;
+        if (!discard_exact_before(
+                peer, (size_t)packetLength - 1, deadline)) {
+            return false;
+        }
+
+        if (action == TB_PRE_SESSION_PROMOTE_HELLO) return true;
+        if (action == TB_PRE_SESSION_CLOSE_AUXILIARY) return false;
+        probeStarted = true;
+    }
 }
 
 static bool write_exact(int fd, const void *buffer, size_t length) {
@@ -1073,9 +1123,9 @@ static double renderer_histogram_percentile(
     return TB_NATIVE_METAL_TIMING_BUCKETS * TB_NATIVE_METAL_TIMING_BUCKET_MS;
 }
 
-static int make_listener(uint16_t port) {
+static int try_make_listener(uint16_t port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) fail("socket");
+    if (fd < 0) return -1;
     int reuse = 1;
     (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
     int requested = 4 * 1024 * 1024;
@@ -1085,8 +1135,19 @@ static int make_listener(uint16_t port) {
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
     address.sin_addr.s_addr = htonl(INADDR_ANY);
-    if (bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0) fail("bind");
-    if (listen(fd, 1) != 0) fail("listen");
+    if (bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+        listen(fd, 1) != 0) {
+        const int savedError = errno;
+        close(fd);
+        errno = savedError;
+        return -1;
+    }
+    return fd;
+}
+
+static int make_listener(uint16_t port) {
+    const int fd = try_make_listener(port);
+    if (fd < 0) fail("listener-create");
     return fd;
 }
 
@@ -1103,14 +1164,17 @@ static NSScreen *native_builtin_5k_screen(CGDirectDisplayID *selectedDisplayID) 
             : NULL;
         const size_t pixelWidth = mode ? CGDisplayModeGetPixelWidth(mode) : 0;
         const size_t pixelHeight = mode ? CGDisplayModeGetPixelHeight(mode) : 0;
+        const bool asleep = displayID != kCGNullDirectDisplay &&
+            CGDisplayIsAsleep(displayID);
         const bool accepted = displayID != kCGNullDirectDisplay &&
             CGDisplayIsBuiltin(displayID) &&
             CGDisplayIsActive(displayID) &&
+            !asleep &&
             pixelWidth == 5120 && pixelHeight == 2880 &&
             candidate.backingScaleFactor == 2.0;
         fprintf(stderr,
                 "TB_PROTOCOL_METAL panelCandidate=%s displayID=%u builtin=%s "
-                "active=%s modePixels=%zux%zu scale=%.2f "
+                "active=%s asleep=%s modePixels=%zux%zu scale=%.2f "
                 "frame=%.0f,%.0f %.0fx%.0f\n",
                 accepted ? "selected" : "rejected",
                 (unsigned int)displayID,
@@ -1118,6 +1182,7 @@ static NSScreen *native_builtin_5k_screen(CGDirectDisplayID *selectedDisplayID) 
                     CGDisplayIsBuiltin(displayID) ? "true" : "false",
                 displayID != kCGNullDirectDisplay &&
                     CGDisplayIsActive(displayID) ? "true" : "false",
+                asleep ? "true" : "false",
                 pixelWidth, pixelHeight,
                 candidate.backingScaleFactor,
                 candidate.frame.origin.x, candidate.frame.origin.y,
@@ -1180,6 +1245,18 @@ static bool peer_arrived_via_bridge0_link_local(int peer) {
 
     const uint32_t hostAddress = ntohl(localAddress.sin_addr.s_addr);
     if (!tb_pre_session_is_ipv4_link_local(hostAddress)) return false;
+
+    struct sockaddr_in peerAddress;
+    memset(&peerAddress, 0, sizeof(peerAddress));
+    socklen_t peerLength = sizeof(peerAddress);
+    if (getpeername(
+            peer, (struct sockaddr *)&peerAddress, &peerLength) != 0 ||
+        peerLength < sizeof(peerAddress) ||
+        peerAddress.sin_family != AF_INET ||
+        !tb_pre_session_is_ipv4_link_local(
+            ntohl(peerAddress.sin_addr.s_addr))) {
+        return false;
+    }
 
     struct ifaddrs *interfaces = NULL;
     if (getifaddrs(&interfaces) != 0) return false;
@@ -1404,6 +1481,185 @@ static void on_bonjour_register(DNSServiceRef service,
 
 @end
 
+/* Before a drawable exists, retain only the minimum control plane needed to
+ * distinguish a real display request from discovery and throughput probes.
+ * A validated direct-bridge HELLO causes one bounded panel-wake attempt; the
+ * HELLO socket is then closed so the sender reconnects through the ordinary
+ * fully initialized receiver path. */
+static NSScreen *wait_for_native_panel_after_sender_hello(
+    uint16_t port,
+    struct tb_power_lifecycle *powerLifecycle,
+    CGDirectDisplayID *selectedDisplayID,
+    int *startupResult) {
+    if (startupResult) *startupResult = 73;
+
+    int listener = try_make_listener(port);
+    if (listener < 0) {
+        receiver_diagnostic(
+            OS_LOG_TYPE_ERROR,
+            "startup=hello-broker-failed operation=listener-create errno=%d",
+            errno);
+        return nil;
+    }
+    const int listenerFlags = fcntl(listener, F_GETFL, 0);
+    if (listenerFlags < 0 ||
+        fcntl(listener, F_SETFL, listenerFlags | O_NONBLOCK) != 0) {
+        const int savedError = errno;
+        close(listener);
+        errno = savedError;
+        receiver_diagnostic(
+            OS_LOG_TYPE_ERROR,
+            "startup=hello-broker-failed operation=listener-nonblocking "
+            "errno=%d",
+            savedError);
+        return nil;
+    }
+
+    /* This advertisement is a wake-only control plane. Conservatively omit
+     * DPCM until the real renderer has queried its exact Metal capability. */
+    TBBonjourPublisher *startupBonjour = [[TBBonjourPublisher alloc]
+        initWithPort:port supportsDPCM:NO];
+    if (!startupBonjour) {
+        close(listener);
+        receiver_diagnostic(
+            OS_LOG_TYPE_ERROR,
+            "startup=hello-broker-failed operation=bonjour-create");
+        return nil;
+    }
+
+    NSScreen *screen = nil;
+    unsigned int wakeCycle = 0;
+    receiver_diagnostic(
+        OS_LOG_TYPE_DEFAULT,
+        "startup=hello-broker-listening port=%u surface=false",
+        (unsigned int)port);
+
+    while (g_startup_termination_signal == 0 && !screen) {
+        screen = native_builtin_5k_screen(selectedDisplayID);
+        if (screen) break;
+
+        struct pollfd descriptor = {
+            .fd = listener,
+            .events = POLLIN,
+            .revents = 0
+        };
+        int ready;
+        do {
+            ready = poll(&descriptor, 1, 250);
+        } while (ready < 0 && errno == EINTR &&
+                 g_startup_termination_signal == 0);
+        if (g_startup_termination_signal != 0) break;
+        if (ready < 0) {
+            receiver_diagnostic(
+                OS_LOG_TYPE_ERROR,
+                "startup=hello-broker-failed operation=poll errno=%d",
+                errno);
+            break;
+        }
+
+        /* Keep AppKit's launch-time notification delivery responsive without
+         * entering NSApplication's full run loop before its window exists. */
+        [[NSRunLoop currentRunLoop]
+            runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+        if (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            receiver_diagnostic(
+                OS_LOG_TYPE_ERROR,
+                "startup=hello-broker-failed operation=listener-events "
+                "revents=0x%x",
+                descriptor.revents);
+            break;
+        }
+        if (ready == 0 || !(descriptor.revents & POLLIN)) continue;
+
+        int peer = accept(listener, NULL, NULL);
+        if (peer < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
+            receiver_diagnostic(
+                OS_LOG_TYPE_ERROR,
+                "startup=hello-broker-failed operation=accept errno=%d",
+                errno);
+            break;
+        }
+
+        const bool directBridgePeer =
+            peer_arrived_via_bridge0_link_local(peer);
+        const bool helloAccepted = directBridgePeer &&
+            receive_pre_session_hello_before(
+                peer,
+                CACurrentMediaTime() +
+                    TB_SERVE_PEER_IDLE_TIMEOUT_SECONDS);
+        close(peer);
+        if (!helloAccepted || g_startup_termination_signal != 0) continue;
+
+        wakeCycle++;
+        const int wakeResult =
+            tb_power_lifecycle_request_panel_wake(powerLifecycle);
+        receiver_diagnostic(
+            wakeResult == 0 ? OS_LOG_TYPE_DEFAULT : OS_LOG_TYPE_ERROR,
+            "startup=hello-promoted wakeCycle=%u wakeResult=%d "
+            "surface=false",
+            wakeCycle,
+            wakeResult);
+        if (wakeResult != 0) {
+            tb_power_lifecycle_end_session(powerLifecycle);
+            continue;
+        }
+
+        const CFTimeInterval panelDeadline = CACurrentMediaTime() + 8.0;
+        do {
+            screen = native_builtin_5k_screen(selectedDisplayID);
+            if (screen || g_startup_termination_signal != 0) break;
+            [[NSRunLoop currentRunLoop]
+                runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+        } while (CACurrentMediaTime() < panelDeadline);
+
+        if (!screen) {
+            /* A failed cycle cannot leave a synthetic activity assertion
+             * behind. The next validated HELLO may start one fresh cycle. */
+            tb_power_lifecycle_end_session(powerLifecycle);
+            receiver_diagnostic(
+                OS_LOG_TYPE_DEFAULT,
+                "startup=hello-wake-expired wakeCycle=%u "
+                "deadlineSeconds=8 surface=false",
+                wakeCycle);
+        }
+    }
+
+    /* The process-wide temporary handlers stay installed after this function
+     * returns. They cover renderer/window construction as well as this broker,
+     * and are replaced only after both dispatch signal sources are active.
+     * Keeping one signal owner across that whole interval avoids a handoff race
+     * with the Bonjour worker or another already-running AppKit thread. */
+    [startupBonjour invalidate];
+    startupBonjour = nil;
+    close(listener);
+    const int terminationSignal = (int)g_startup_termination_signal;
+
+    if (terminationSignal != 0) {
+        tb_power_lifecycle_end_session(powerLifecycle);
+        if (startupResult) *startupResult = 128 + terminationSignal;
+        receiver_diagnostic(
+            OS_LOG_TYPE_DEFAULT,
+            "startup=hello-broker-stopped signal=%d",
+            terminationSignal);
+        return nil;
+    }
+    if (screen) {
+        /* The temporary wake has completed its bounded job. Never retain it
+         * while waiting for the sender's reconnect; the full HELLO creates
+         * the one session-owned wake before profile negotiation. */
+        tb_power_lifecycle_end_session(powerLifecycle);
+        if (startupResult) *startupResult = 0;
+        receiver_diagnostic(
+            OS_LOG_TYPE_DEFAULT,
+            "startup=hello-broker-complete wakeCycles=%u surface=ready",
+            wakeCycle);
+    }
+    return screen;
+}
+
 static bool physical_panel_accepts_dpcm(NSWindow *window,
                                         CGDirectDisplayID expectedDisplayID,
                                         int sourceWidth,
@@ -1589,6 +1845,36 @@ int main(int argc, const char *argv[]) {
             NSApplicationPresentationHideDock |
             NSApplicationPresentationHideMenuBar;
 
+        /* Own termination before any sleeping-panel control-plane or renderer
+         * setup starts. This handler only writes a sig_atomic_t. It remains
+         * active until the ordinary dispatch signal sources are both live, so
+         * no SIGTERM/SIGINT can disappear between startup phases or land on an
+         * unblocked Bonjour/AppKit worker during a thread-local mask handoff. */
+        struct sigaction startupAction;
+        struct sigaction previousTermAction;
+        struct sigaction previousIntAction;
+        memset(&startupAction, 0, sizeof(startupAction));
+        startupAction.sa_handler = record_startup_termination_signal;
+        sigemptyset(&startupAction.sa_mask);
+        g_startup_termination_signal = 0;
+        const bool termHandlerInstalled =
+            sigaction(SIGTERM, &startupAction, &previousTermAction) == 0;
+        const bool intHandlerInstalled =
+            sigaction(SIGINT, &startupAction, &previousIntAction) == 0;
+        if (!termHandlerInstalled || !intHandlerInstalled) {
+            if (termHandlerInstalled) {
+                (void)sigaction(SIGTERM, &previousTermAction, NULL);
+            }
+            if (intHandlerInstalled) {
+                (void)sigaction(SIGINT, &previousIntAction, NULL);
+            }
+            receiver_diagnostic(
+                OS_LOG_TYPE_ERROR,
+                "startup=failed operation=signal-handler errno=%d",
+                errno);
+            return 78;
+        }
+
         /* Acquire the appliance-wide system assertion before display
          * discovery. If launchd restarts us while the panel is asleep, waking
          * and polling first avoids an EX_UNAVAILABLE restart loop in which no
@@ -1602,11 +1888,28 @@ int main(int argc, const char *argv[]) {
             return 72;
         }
         CGDirectDisplayID selectedDisplayID = kCGNullDirectDisplay;
-        NSScreen *screen = nil;
-        unsigned int panelWakeAttempt = 0;
-        while (!screen) {
-        @autoreleasepool {
-            panelWakeAttempt++;
+        NSScreen *screen = native_builtin_5k_screen(&selectedDisplayID);
+        if (!screen && serveForever) {
+            int startupResult = 73;
+            screen = wait_for_native_panel_after_sender_hello(
+                (uint16_t)portValue,
+                &powerLifecycle,
+                &selectedDisplayID,
+                &startupResult);
+            if (!screen) {
+                tb_power_lifecycle_stop(&powerLifecycle);
+                fprintf(stderr,
+                        "TB_PROTOCOL_METAL result=failed "
+                        "reason=startup-hello-broker result=%d\n",
+                        startupResult);
+                return startupResult;
+            }
+        }
+
+        /* Keep the bounded hardware benchmark deterministic and independent
+         * of a sender. Persistent appliance mode above never wakes on a timer:
+         * only a validated direct-bridge HELLO authorizes its wake request. */
+        if (!screen) {
             const BOOL startupSessionAvailable =
                 current_startup_gui_session_available();
             const int wakeResult = startupSessionAvailable
@@ -1623,28 +1926,12 @@ int main(int argc, const char *argv[]) {
                             dateWithTimeIntervalSinceNow:0.1]];
                 } while (CACurrentMediaTime() < panelWakeDeadline);
             }
-
-            /* Between attempts, retain only the inexpensive system assertion.
-             * The display follows its normal sleep preference until the next
-             * bounded wake attempt or an ordinary local wake notification. */
             tb_power_lifecycle_end_session(&powerLifecycle);
-            if (screen) break;
-
-            if (!startupSessionAvailable &&
-                (panelWakeAttempt == 1 || panelWakeAttempt % 120 == 0)) {
-                receiver_diagnostic(
-                    OS_LOG_TYPE_DEFAULT,
-                    "startup=panel-wake-deferred "
-                    "reason=gui-session-unavailable attempt=%u",
-                    panelWakeAttempt);
-            }
-
-            if (!serveForever) {
+            if (!screen) {
                 receiver_diagnostic(
                     OS_LOG_TYPE_ERROR,
-                    "startup=panel-unavailable mode=bounded attempt=%u "
-                    "wakeResult=%d deadlineSeconds=8",
-                    panelWakeAttempt,
+                    "startup=panel-unavailable mode=bounded wakeResult=%d "
+                    "deadlineSeconds=8",
                     wakeResult);
                 tb_power_lifecycle_stop(&powerLifecycle);
                 fprintf(stderr,
@@ -1652,34 +1939,6 @@ int main(int argc, const char *argv[]) {
                         "reason=no-active-builtin-native-5k-panel\n");
                 return 69;
             }
-
-            const double backoffSeconds = MIN(
-                30.0,
-                2.0 * (double)MIN(panelWakeAttempt, 15u));
-            if (startupSessionAvailable ||
-                panelWakeAttempt == 1 || panelWakeAttempt % 120 == 0) {
-                receiver_diagnostic(
-                    startupSessionAvailable
-                        ? (wakeResult == 0
-                            ? OS_LOG_TYPE_ERROR
-                            : OS_LOG_TYPE_FAULT)
-                        : OS_LOG_TYPE_DEFAULT,
-                    "startup=panel-wait attempt=%u wakeResult=%d "
-                    "fastPathSeconds=8 backoffSeconds=%.0f",
-                    panelWakeAttempt,
-                    wakeResult,
-                    backoffSeconds);
-            }
-            const CFTimeInterval retryDeadline =
-                CACurrentMediaTime() + backoffSeconds;
-            do {
-                [[NSRunLoop currentRunLoop]
-                    runUntilDate:[NSDate
-                        dateWithTimeIntervalSinceNow:0.25]];
-                screen = native_builtin_5k_screen(&selectedDisplayID);
-                if (screen) break;
-            } while (CACurrentMediaTime() < retryDeadline);
-        }
         }
         if (!MTLCreateSystemDefaultDevice()) {
             fprintf(stderr,
@@ -1975,10 +2234,8 @@ int main(int argc, const char *argv[]) {
 
         signal(SIGPIPE, SIG_IGN);
         /* Dispatch signal sources turn process termination into ordinary main-
-         * queue work. No malloc, logging, Objective-C, or descriptor mutation
-         * runs in a POSIX signal handler. */
-        signal(SIGTERM, SIG_IGN);
-        signal(SIGINT, SIG_IGN);
+         * queue work. The minimal startup handlers remain installed until both
+         * sources are active below. */
         int listener = make_listener((uint16_t)portValue);
         struct tb_shutdown_gate *shutdownGate =
             (struct tb_shutdown_gate *)calloc(1, sizeof(*shutdownGate));
@@ -2027,6 +2284,26 @@ int main(int argc, const char *argv[]) {
             signal(SIGTERM, SIG_DFL);
             signal(SIGINT, SIG_DFL);
             return 78;
+        }
+        /* Both sources now observe process-directed signals. Switch away from
+         * the async handler only after that replacement exists, then replay any
+         * signal recorded during startup through the ordinary shutdown gate.
+         * A concurrent signal is covered on at least one side: before the
+         * disposition switch it sets the flag (and is visible to the active
+         * source); afterward the already-active source receives it. */
+        signal(SIGTERM, SIG_IGN);
+        signal(SIGINT, SIG_IGN);
+        const int startupTerminationSignal =
+            (int)g_startup_termination_signal;
+        g_startup_termination_signal = 0;
+        if (startupTerminationSignal != 0 &&
+            tb_shutdown_gate_request(
+                shutdownGate, startupTerminationSignal)) {
+            receiver_diagnostic(
+                OS_LOG_TYPE_DEFAULT,
+                "shutdown=requested signal=%d admission=closed "
+                "source=startup-handoff",
+                startupTerminationSignal);
         }
         const bool supportsDPCM = tb_native_metal_supports_dpcm(renderer) != 0;
         const unsigned boundedReceiveMiB = receiveOverlapEnabled ? 128u : 64u;
@@ -2125,6 +2402,13 @@ int main(int argc, const char *argv[]) {
                     lifecycleSnapshot, !released);
                 return released;
             }
+            /* A source-display wake may follow a period in which the iMac
+             * panel was allowed to sleep. Recreate the bounded pair: hold the
+             * panel awake and issue one remote user-activity wake. On initial
+             * startup, begin_session reuses a still-valid pre-session wake if
+             * one exists; after end_session it necessarily creates a fresh
+             * one. Holding the display assertion alone cannot wake an already
+             * sleeping panel. */
             const BOOL began =
                 tb_power_lifecycle_begin_session(&powerLifecycle) == 0;
             tb_receiver_lifecycle_snapshot_set_power_failure(
@@ -2238,54 +2522,29 @@ int main(int argc, const char *argv[]) {
              * profile, waking the panel, or taking a display assertion. */
             const CFTimeInterval firstPacketDeadline =
                 CACurrentMediaTime() + TB_SERVE_PEER_IDLE_TIMEOUT_SECONDS;
-            bool probeStarted = false;
-            bool helloAccepted = false;
-            for (;;) {
-                uint8_t lengthBytes[4];
-                errno = 0;
-                const bool readLength = probeStarted
-                    ? read_exact(peer, lengthBytes, sizeof(lengthBytes))
-                    : read_exact_before(peer, lengthBytes,
-                                        sizeof(lengthBytes),
-                                        firstPacketDeadline);
-                if (!readLength) break;
-
-                const uint32_t packetLength = load_be32(lengthBytes);
-                if (packetLength < 1 ||
-                    packetLength > TB_PRE_SESSION_MAX_PACKET_LENGTH) {
-                    break;
-                }
-                uint8_t packetType = 0;
-                const bool readType = probeStarted
-                    ? read_exact(peer, &packetType, 1)
-                    : read_exact_before(peer, &packetType, 1,
-                                        firstPacketDeadline);
-                if (!readType) break;
-
-                const enum tb_pre_session_action action =
-                    tb_pre_session_classify(
-                        probeStarted, packetLength, packetType);
-                if (action == TB_PRE_SESSION_REJECT) break;
-                const size_t packetPayloadLength =
-                    (size_t)packetLength - 1;
-                const bool payloadConsumed = probeStarted
-                    ? discard_exact(peer, packetPayloadLength)
-                    : discard_exact_before(
-                        peer, packetPayloadLength, firstPacketDeadline);
-                if (!payloadConsumed) break;
-
-                if (action == TB_PRE_SESSION_PROMOTE_HELLO) {
-                    helloAccepted = true;
-                    break;
-                }
-                if (action == TB_PRE_SESSION_CLOSE_AUXILIARY) break;
-                probeStarted = true;
-            }
+            const bool helloAccepted =
+                receive_pre_session_hello_before(
+                    peer, firstPacketDeadline);
             if (!helloAccepted) {
                 tb_shutdown_gate_close_peer(shutdownGate, &peer);
                 if (tb_shutdown_gate_is_requested(shutdownGate)) break;
                 continue;
             }
+        }
+        if (tb_power_lifecycle_request_panel_wake(&powerLifecycle) != 0) {
+            fprintf(stderr,
+                    "TB_PROTOCOL_METAL result=failed "
+                    "reason=panel-wake-request\n");
+            tb_shutdown_gate_close_peer(shutdownGate, &peer);
+            tb_power_lifecycle_end_session(&powerLifecycle);
+            if (tb_shutdown_gate_is_requested(shutdownGate)) break;
+            if (serveForever) {
+                showIdleState(@"Couldn’t wake the display · retrying",
+                              @"The receiver will try again automatically.");
+                continue;
+            }
+            exitCode = 75;
+            break;
         }
         showIdleState(@"MacBook detected · starting",
                       @"Preparing the native 5K display stream.");

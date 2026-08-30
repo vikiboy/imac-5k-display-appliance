@@ -22,6 +22,7 @@ require_literal() {
 require_literal "ProgramArguments:0 string /bin/zsh"
 require_literal "ProgramArguments:2 string marker-gate"
 require_literal "plutil -replace ProgramArguments.2"
+require_literal "plutil -remove ProgramArguments.3"
 require_literal 'ProgramArguments:4 string ${ENABLED_PATH}'
 require_literal "ProgramArguments:5 string /usr/bin/open"
 require_literal "ProgramArguments:7 string -n"
@@ -35,6 +36,9 @@ require_literal "force_stop_existing_sender()"
 require_literal '/bin/kill -TERM "$pid"'
 require_literal '/bin/kill -KILL "$pid"'
 require_literal 'CODESIGN_BIN="${TB_CODESIGN_BIN:-/usr/bin/codesign}"'
+require_literal 'REQUIRE_STABLE_CODESIGN="${TB_REQUIRE_STABLE_CODESIGN:-1}"'
+require_literal 'Sender is ad-hoc signed'
+require_literal 'certificate-backed designated requirement'
 require_literal 'bundle_identifier'
 require_literal "MUTATION_STARTED=1"
 require_literal "prior state was restored"
@@ -45,6 +49,10 @@ require_literal 'PREVENT_DISPLAY_SLEEP_KEY="fd.tbdisplaysender.preventDisplaySle
 require_literal 'ORIGINAL_PREVENT_SLEEP_PATH="${STATE_DIR}/prevent-display-sleep.original"'
 require_literal 'write "$PREFERENCE_DOMAIN" "$PREVENT_DISPLAY_SLEEP_KEY" -bool false'
 require_literal 'LAUNCHCTL_BIN="${TB_LAUNCHCTL_BIN:-/bin/launchctl}"'
+require_literal 'LEGACY_LABEL="com.targetbridge.sender5k"'
+require_literal 'HAD_LEGACY_JOB=0'
+require_literal 'bootout "gui/$(id -u)/${LEGACY_LABEL}"'
+require_literal 'install -m 0644 "$PREVIOUS_LEGACY_PLIST" "$LEGACY_PLIST_PATH"'
 
 # These are the user-facing plug-in defaults for this personal appliance.
 require_literal "ProgramArguments:14 string auto"
@@ -79,7 +87,7 @@ if [[ -z "$marker_line" ]] || (( marker_line >= bootstrap_line )); then
   print -u2 -- "sender installer must establish one launch marker before its single bootstrap"
   exit 1
 fi
-if (( $(/usr/bin/grep -c '"\$LAUNCHCTL_BIN" bootstrap' "$installer") != 2 )); then
+if (( $(/usr/bin/grep -F -c '"$LAUNCHCTL_BIN" bootstrap "gui/$(id -u)" "$PLIST_PATH"' "$installer") != 2 )); then
   print -u2 -- "unexpected sender bootstrap authority count"
   exit 1
 fi

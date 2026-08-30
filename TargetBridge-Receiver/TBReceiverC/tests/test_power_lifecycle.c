@@ -148,23 +148,33 @@ IOReturn IOPMAssertionRelease(IOPMAssertionID assertionID) {
 static void assert_no_session_assertions(const struct tb_power_lifecycle *p) {
     assert(p->display_sleep_assertion == kIOPMNullAssertionID);
     assert(p->user_activity_assertion == kIOPMNullAssertionID);
+    assert(p->display_awake_held == 0);
+    assert(p->panel_wake_requested == 0);
     assert(active_display == 0);
     assert(active_activity == 0);
 }
 
-static void test_one_shot_session_and_idempotent_end(void) {
+static void test_split_operations_are_independent_and_idempotent(void) {
     reset_fake();
     struct tb_power_lifecycle p;
     assert(tb_power_lifecycle_start(&p) == 0);
     assert(active_system == 1);
-    assert(tb_power_lifecycle_begin_session(&p) == 0);
+
+    assert(tb_power_lifecycle_request_panel_wake(&p) == 0);
+    assert(tb_power_lifecycle_request_panel_wake(&p) == 0);
+    assert(activity_declare_count == 1);
+    assert(active_activity == 1);
+    assert(active_display == 0);
+    assert(p.panel_wake_requested == 1);
+
+    assert(tb_power_lifecycle_hold_display_awake(&p) == 0);
+    assert(tb_power_lifecycle_hold_display_awake(&p) == 0);
     assert(display_create_count == 1);
     assert(activity_declare_count == 1);
     assert(active_display == 1);
     assert(active_activity == 1);
+    assert(p.display_awake_held == 1);
 
-    /* No frame/heartbeat API exists: a live session remains one-shot. */
-    assert(activity_declare_count == 1);
     tb_power_lifecycle_end_session(&p);
     assert_no_session_assertions(&p);
     assert(release_order[0] == FAKE_ACTIVITY);
@@ -174,6 +184,72 @@ static void test_one_shot_session_and_idempotent_end(void) {
     assert(release_count == releases);
     tb_power_lifecycle_stop(&p);
     assert(active_system == 0);
+}
+
+static void test_begin_session_is_one_shot_and_reuses_pre_wake(void) {
+    reset_fake();
+    struct tb_power_lifecycle p;
+    assert(tb_power_lifecycle_start(&p) == 0);
+    assert(tb_power_lifecycle_request_panel_wake(&p) == 0);
+    const IOPMAssertionID preWake = p.user_activity_assertion;
+    assert(activity_declare_count == 1);
+    assert(display_create_count == 0);
+
+    assert(tb_power_lifecycle_begin_session(&p) == 0);
+    assert(p.user_activity_assertion == preWake);
+    assert(activity_declare_count == 1);
+    assert(display_create_count == 1);
+    assert(release_count == 0);
+    assert(active_display == 1);
+    assert(active_activity == 1);
+
+    /* A full session remains bounded: beginning the next connection releases
+     * both old IDs and creates exactly one fresh pair. */
+    assert(tb_power_lifecycle_begin_session(&p) == 0);
+    assert(activity_declare_count == 2);
+    assert(display_create_count == 2);
+    assert(release_count == 2);
+    assert(release_order[0] == FAKE_ACTIVITY);
+    assert(release_order[1] == FAKE_DISPLAY);
+    assert(active_display == 1);
+    assert(active_activity == 1);
+    assert(max_active_display == 1);
+    assert(max_active_activity == 1);
+
+    tb_power_lifecycle_stop(&p);
+    assert(active_system == 0);
+    assert_no_session_assertions(&p);
+}
+
+static void test_source_sleep_wake_recreates_complete_session_pair(void) {
+    reset_fake();
+    struct tb_power_lifecycle p;
+    assert(tb_power_lifecycle_start(&p) == 0);
+
+    assert(tb_power_lifecycle_begin_session(&p) == 0);
+    assert(display_create_count == 1);
+    assert(activity_declare_count == 1);
+    assert(active_display == 1);
+    assert(active_activity == 1);
+
+    /* Source display sleep releases both bounded IDs so the iMac panel may
+     * sleep naturally while the control connection remains available. */
+    tb_power_lifecycle_end_session(&p);
+    assert_no_session_assertions(&p);
+
+    /* Source display wake must issue fresh user activity as well as create the
+     * display assertion; holding only the latter leaves an asleep panel black. */
+    assert(tb_power_lifecycle_begin_session(&p) == 0);
+    assert(display_create_count == 2);
+    assert(activity_declare_count == 2);
+    assert(active_display == 1);
+    assert(active_activity == 1);
+    assert(max_active_display == 1);
+    assert(max_active_activity == 1);
+
+    tb_power_lifecycle_stop(&p);
+    assert(active_system == 0);
+    assert_no_session_assertions(&p);
 }
 
 static void test_reconnect_never_overlaps_assertions(void) {
@@ -194,17 +270,23 @@ static void test_reconnect_never_overlaps_assertions(void) {
     assert_no_session_assertions(&p);
 }
 
-static void test_failure_rollbacks(void) {
+static void test_split_failure_rollbacks(void) {
     reset_fake();
     struct tb_power_lifecycle p;
     assert(tb_power_lifecycle_start(&p) == 0);
+
     fail_display_create = true;
     populate_id_on_failure = true;
-    assert(tb_power_lifecycle_begin_session(&p) == -1);
+    assert(tb_power_lifecycle_hold_display_awake(&p) == -1);
+    assert(display_create_count == 1);
+    assert(release_count == 1);
     assert_no_session_assertions(&p);
+
     fail_display_create = false;
     fail_activity_declare = true;
-    assert(tb_power_lifecycle_begin_session(&p) == -1);
+    assert(tb_power_lifecycle_request_panel_wake(&p) == -1);
+    assert(activity_declare_count == 1);
+    assert(release_count == 2);
     assert_no_session_assertions(&p);
     tb_power_lifecycle_stop(&p);
     assert(active_system == 0);
@@ -213,6 +295,77 @@ static void test_failure_rollbacks(void) {
     fail_system_create = true;
     populate_id_on_failure = true;
     assert(tb_power_lifecycle_start(&p) == -1);
+    assert(active_system == 0);
+    assert_no_session_assertions(&p);
+}
+
+static void test_begin_session_failure_is_transactional(void) {
+    reset_fake();
+    struct tb_power_lifecycle p;
+    assert(tb_power_lifecycle_start(&p) == 0);
+    assert(tb_power_lifecycle_request_panel_wake(&p) == 0);
+    fail_display_create = true;
+    populate_id_on_failure = true;
+    assert(tb_power_lifecycle_begin_session(&p) == -1);
+    assert_no_session_assertions(&p);
+    assert(display_create_count == 1);
+    assert(activity_declare_count == 1);
+
+    fail_display_create = false;
+    fail_activity_declare = true;
+    assert(tb_power_lifecycle_begin_session(&p) == -1);
+    assert_no_session_assertions(&p);
+    assert(display_create_count == 2);
+    assert(activity_declare_count == 2);
+
+    tb_power_lifecycle_stop(&p);
+    assert(active_system == 0);
+}
+
+static void test_failed_create_rollback_is_retained_and_retried(void) {
+    reset_fake();
+    struct tb_power_lifecycle p;
+    assert(tb_power_lifecycle_start(&p) == 0);
+
+    fail_activity_declare = true;
+    populate_id_on_failure = true;
+    release_failures_remaining = 1;
+    assert(tb_power_lifecycle_request_panel_wake(&p) == -1);
+    assert(p.user_activity_assertion != kIOPMNullAssertionID);
+    assert(p.panel_wake_requested == 0);
+    assert(active_activity == 1);
+
+    /* Cleanup must succeed before the invalid ID can be replaced. */
+    release_failures_remaining = 1;
+    assert(tb_power_lifecycle_request_panel_wake(&p) == -1);
+    assert(activity_declare_count == 1);
+    assert(active_activity == 1);
+    fail_activity_declare = false;
+    assert(tb_power_lifecycle_request_panel_wake(&p) == 0);
+    assert(activity_declare_count == 2);
+    assert(active_activity == 1);
+    assert(max_active_activity == 1);
+    tb_power_lifecycle_end_session(&p);
+    assert_no_session_assertions(&p);
+
+    fail_display_create = true;
+    release_failures_remaining = 1;
+    assert(tb_power_lifecycle_hold_display_awake(&p) == -1);
+    assert(p.display_sleep_assertion != kIOPMNullAssertionID);
+    assert(p.display_awake_held == 0);
+    assert(active_display == 1);
+
+    release_failures_remaining = 1;
+    assert(tb_power_lifecycle_hold_display_awake(&p) == -1);
+    assert(display_create_count == 1);
+    assert(active_display == 1);
+    fail_display_create = false;
+    assert(tb_power_lifecycle_hold_display_awake(&p) == 0);
+    assert(display_create_count == 2);
+    assert(active_display == 1);
+    assert(max_active_display == 1);
+
+    tb_power_lifecycle_stop(&p);
     assert(active_system == 0);
     assert_no_session_assertions(&p);
 }
@@ -230,7 +383,9 @@ static void test_release_failure_is_retained_and_retried(void) {
     release_failures_remaining = 1;
     tb_power_lifecycle_end_session(&p);
     assert(p.user_activity_assertion != kIOPMNullAssertionID);
+    assert(p.panel_wake_requested == 0);
     assert(p.display_sleep_assertion == kIOPMNullAssertionID);
+    assert(p.display_awake_held == 0);
     assert(active_activity == 1);
     assert(active_display == 0);
 
@@ -262,9 +417,13 @@ static void test_release_failure_is_retained_and_retried(void) {
 }
 
 int main(void) {
-    test_one_shot_session_and_idempotent_end();
+    test_split_operations_are_independent_and_idempotent();
+    test_begin_session_is_one_shot_and_reuses_pre_wake();
+    test_source_sleep_wake_recreates_complete_session_pair();
     test_reconnect_never_overlaps_assertions();
-    test_failure_rollbacks();
+    test_split_failure_rollbacks();
+    test_begin_session_failure_is_transactional();
+    test_failed_create_rollback_is_retained_and_retried();
     test_release_failure_is_retained_and_retried();
     puts("power lifecycle tests passed");
     return 0;

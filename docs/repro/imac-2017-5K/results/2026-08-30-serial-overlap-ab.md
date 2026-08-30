@@ -7,8 +7,8 @@
 > dropped. Version 0.5 counts that outcome as a presentation drop and sets
 > `displaySyncEnabled` to `YES` by default. Only the exact diagnostic override
 > `TB_DISPLAY_SYNC=0` disables synchronization. The rows below are retained as
-> historical evidence and must be repeated with the corrected, synchronized
-> binary.
+> historical evidence. The repeated corrected, synchronized result is recorded
+> in [the v0.9 hardware A/B](2026-08-30-v0.9-corrected-overlap-ab.md).
 
 This is a sanitized engineering record for the exact 2017 27-inch Retina 5K
 iMac (`iMac18,3`, Radeon Pro 575). The virtual display was

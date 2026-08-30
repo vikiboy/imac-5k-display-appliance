@@ -226,6 +226,7 @@ test: $(TEST_BIN) $(TEST_DPCM_BIN) $(TEST_INPUT_QUEUE_BIN) $(TEST_RECEIVER_PROFI
 	/bin/zsh tests/test_receiver_screensaver_preferences.zsh ../scripts/install_targetbridge_5k_receiver_launch_agent.sh ../scripts/uninstall_targetbridge_5k_receiver_launch_agent.sh
 	/bin/zsh tests/test_appkit_launch_contract.zsh benchmarks/benchmark_targetbridge_raw_receiver.m
 	/bin/zsh tests/test_display_session_activity_contract.zsh src/tb_power_lifecycle.c benchmarks/benchmark_targetbridge_raw_receiver.m
+	/bin/zsh tests/test_startup_hello_broker_contract.zsh benchmarks/benchmark_targetbridge_raw_receiver.m
 	/bin/zsh tests/test_display_lifecycle_contract.zsh benchmarks/benchmark_targetbridge_raw_receiver.m ../../TargetBridge-Sender/TBDisplaySender/TBDisplaySenderService.swift ../../TargetBridge-Sender/TBDisplayShared/TBMonitorProtocol.swift
 	/bin/zsh tests/test_persistent_timing_contract.zsh benchmarks/benchmark_targetbridge_raw_receiver.m
 	/bin/zsh tests/test_receive_overlap_contract.zsh benchmarks/benchmark_targetbridge_raw_receiver.m

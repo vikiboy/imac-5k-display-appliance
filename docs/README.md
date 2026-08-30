@@ -39,6 +39,7 @@ narrower contract.
   — perturbed diagnostic run that separated the power-call fix from bounded
   lazy telemetry-page commitment; it is not release evidence.
 - [`repro/imac-2017-5K/results/2026-08-30-v0.8-resource-soak.md`](repro/imac-2017-5K/results/2026-08-30-v0.8-resource-soak.md)
+- [`repro/imac-2017-5K/results/2026-08-30-v0.9-corrected-overlap-ab.md`](repro/imac-2017-5K/results/2026-08-30-v0.9-corrected-overlap-ab.md)
   — completed one-hour qualified failure: flat disk/thread/FD behavior, strict
   receiver RSS failure, and the locked-surface finding that motivated v0.9's
   explicit display lifecycle.

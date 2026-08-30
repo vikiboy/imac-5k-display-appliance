@@ -115,10 +115,10 @@ enum TBConnectionProbeError: LocalizedError {
 }
 
 /// Unified-logging entry points for the sender. `log stream --predicate
-/// 'subsystem == "com.targetbridge.sender"'` (or Console.app) shows the
+/// 'subsystem == "com.vikiboy.imac5kdisplay.sender"'` (or Console.app) shows the
 /// connection lifecycle without attaching a debugger.
 enum TBLog {
-    static let connection = Logger(subsystem: "com.targetbridge.sender", category: "connection")
+    static let connection = Logger(subsystem: "com.vikiboy.imac5kdisplay.sender", category: "connection")
 }
 
 /// Pure helpers for deciding how to dial a receiver and for composing

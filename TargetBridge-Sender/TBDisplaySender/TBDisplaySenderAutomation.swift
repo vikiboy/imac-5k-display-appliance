@@ -186,13 +186,26 @@ enum TBSenderAutomation {
 
             if let session = await connect(params) {
                 if await waitForConnection(session) {
-                    let connectedAt = Date()
+                    var displayProfileNegotiatedAt: Date?
                     NSLog("[automation] automatic connection active; monitoring link")
-                    while !Task.isCancelled && (session.isConnected || session.isStreaming) {
+                    while !Task.isCancelled && (
+                        session.isConnected ||
+                        session.isStreaming ||
+                        session.isRecoveringPreProfileConnection
+                    ) {
+                        if displayProfileNegotiatedAt == nil,
+                           session.hasNegotiatedDisplayProfile {
+                            displayProfileNegotiatedAt = Date()
+                        }
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                     }
                     guard !Task.isCancelled else { return }
-                    if Date().timeIntervalSince(connectedAt) >= 30 {
+                    let negotiatedDuration = displayProfileNegotiatedAt.map {
+                        Date().timeIntervalSince($0)
+                    }
+                    if automaticReconnectShouldResetBackoff(
+                        negotiatedDuration: negotiatedDuration
+                    ) {
                         // A genuinely usable session should make the next cable
                         // recovery prompt again; only consecutive short-lived
                         // failures need exponential backoff.
@@ -203,7 +216,9 @@ enum TBSenderAutomation {
                     NSLog("[automation] connection attempt did not become active; retrying")
                 }
 
-                if !session.isConnected && !session.isStreaming {
+                if !session.isConnected &&
+                    !session.isStreaming &&
+                    !session.isRecoveringPreProfileConnection {
                     session.stopForAutomaticReconnect()
                 }
             }
@@ -510,11 +525,17 @@ enum TBSenderAutomation {
 
     private static func waitForConnection(_ session: TBDisplaySenderSession) async -> Bool {
         for _ in 0..<40 {
-            if session.isConnected || session.isStreaming { return true }
+            if session.isConnected ||
+                session.isStreaming ||
+                session.isRecoveringPreProfileConnection {
+                return true
+            }
             guard !Task.isCancelled else { return false }
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
-        return session.isConnected || session.isStreaming
+        return session.isConnected ||
+            session.isStreaming ||
+            session.isRecoveringPreProfileConnection
     }
 
     static func flagEnabled(_ value: String?) -> Bool {
@@ -548,6 +569,13 @@ enum TBSenderAutomation {
         case 3: return 8
         default: return 15
         }
+    }
+
+    static func automaticReconnectShouldResetBackoff(
+        negotiatedDuration: TimeInterval?
+    ) -> Bool {
+        guard let negotiatedDuration else { return false }
+        return negotiatedDuration >= 30
     }
 
     /// An omitted or invalid automation value preserves the session's existing

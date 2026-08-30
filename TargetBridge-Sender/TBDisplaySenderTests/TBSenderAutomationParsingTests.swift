@@ -347,6 +347,24 @@ final class TBSenderAutomationParsingTests: XCTestCase {
         XCTAssertEqual(TBSenderAutomation.automaticReconnectRetryDelaySeconds(consecutiveFailures: Int.max), 15)
     }
 
+    func testAutomaticReconnectBackoffResetsOnlyAfterNegotiatedStableSession() {
+        XCTAssertFalse(
+            TBSenderAutomation.automaticReconnectShouldResetBackoff(
+                negotiatedDuration: nil
+            )
+        )
+        XCTAssertFalse(
+            TBSenderAutomation.automaticReconnectShouldResetBackoff(
+                negotiatedDuration: 29.999
+            )
+        )
+        XCTAssertTrue(
+            TBSenderAutomation.automaticReconnectShouldResetBackoff(
+                negotiatedDuration: 30
+            )
+        )
+    }
+
     func testAutomationFlagsEnableOnPresenceOrTruthyValues() {
         for value in ["", "1", "true", "yes", "on", "unexpected"] {
             XCTAssertTrue(TBSenderAutomation.flagEnabled(value), "value \(value)")
