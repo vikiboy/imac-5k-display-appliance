@@ -10,6 +10,7 @@ jobs:
   build-sender:
     name: Build Sender (${{ matrix.os }} - ${{ matrix.arch }})
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-15-intel
@@ -23,7 +24,7 @@ jobs:
 
       - name: Install Tools
         run: |
-          brew install jq xcodegen
+          brew install jq ripgrep xcodegen
 
       - name: Check Localizations
         run: |
@@ -50,6 +51,7 @@ jobs:
   build-receiver:
     name: Build Receiver (${{ matrix.os }} - ${{ matrix.arch }})
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-15-intel
@@ -63,7 +65,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          brew install ffmpeg jq sdl2 sdl3 dylibbundler
+          brew install ffmpeg jq ripgrep sdl2 sdl3 dylibbundler
 
       - name: Check Localizations
         run: |
