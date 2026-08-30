@@ -480,7 +480,6 @@ static BOOL current_startup_gui_session_available(void) {
         tb_display_lifecycle_may_hide_cursor(&_displayLifecycle) &&
         _displayPowerActive) {
         if (self.cursorActivationHandler) self.cursorActivationHandler();
-        return;
     }
     if (!policy.request_activation) return;
 
@@ -514,8 +513,10 @@ static BOOL current_startup_gui_session_available(void) {
 - (void)refreshLifecycleState {
     NSAssert(NSThread.isMainThread,
              @"display lifecycle must be evaluated on the main thread");
-    const BOOL publicSurfaceAvailable =
-        _guiSessionActive && _appForeground && _window.isKeyWindow;
+    /* The secure Aqua-session boundary owns pixel exposure. App/key focus is
+     * deliberately excluded: system UI and Screen Sharing may transiently
+     * move focus without making a physical monitor unavailable. */
+    const BOOL publicSurfaceAvailable = _guiSessionActive;
     const BOOL wantsPower = self.streamActive &&
         _displayLifecycle.source_awake && publicSurfaceAvailable;
     if (wantsPower != _displayPowerActive) {

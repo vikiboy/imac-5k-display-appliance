@@ -28,17 +28,21 @@ int main(void) {
         window.contentView = view;
         /* Do not make a CI runner's real window/cursor globally active. The
          * physical key-window path is covered by the source contract and the
-         * hardware acceptance matrix; this unit test proves that an attached
-         * but non-key surface never takes global cursor ownership. */
+         * hardware acceptance matrix; this unit test proves that a non-key
+         * appliance retains window-scoped suppression intent without taking a
+         * process-global cursor hide. */
         view.suppressLocalCursor = YES;
         [window invalidateCursorRectsForView:view];
         [view resetCursorRects];
         [view updateTrackingAreas];
         [view reapplyCursorPolicy];
+        NSTrackingArea *trackingArea = view.trackingAreas.firstObject;
         if (!view.suppressLocalCursor || view.window != window ||
             metalPlaceholder.superview != view ||
             !NSEqualRects(metalPlaceholder.frame, view.bounds) ||
-            view.trackingAreas.count == 0 ||
+            !trackingArea ||
+            !(trackingArea.options & NSTrackingActiveAlways) ||
+            (trackingArea.options & NSTrackingActiveInKeyWindow) ||
             !window.acceptsMouseMovedEvents) {
             fprintf(stderr,
                     "cursor shield view test: window/hierarchy enable failed\n");
@@ -51,7 +55,7 @@ int main(void) {
             return 1;
         }
         [window close];
-        printf("cursor shield view test passed (non-key safety, child surface, transparent rect lifecycle)\n");
+        printf("cursor shield view test passed (non-key suppression intent, child surface, transparent rect lifecycle)\n");
         return 0;
     }
 }

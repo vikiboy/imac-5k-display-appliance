@@ -30,19 +30,20 @@ static void require_policy(int stream,
 int main(void) {
     require_policy(0, 0, 0, 0, 1, 0, 0, "locked idle");
     require_policy(1, 0, 0, 0, 1, 0, 0, "locked stream");
-    require_policy(1, 1, 0, 0, 1, 0, 1, "unlocked inactive stream");
-    require_policy(1, 1, 1, 0, 1, 0, 1, "active non-key stream");
+    require_policy(1, 1, 0, 0, 0, 1, 1, "unlocked inactive stream");
+    require_policy(1, 1, 1, 0, 0, 1, 1, "active non-key stream");
     require_policy(1, 1, 1, 1, 0, 1, 0, "owned live stream");
     require_policy(0, 1, 1, 0, 0, 0, 0, "owned idle surface");
-    require_policy(0, 1, 0, 0, 1, 0, 1, "inactive idle surface");
+    require_policy(0, 1, 0, 0, 0, 0, 1, "inactive idle surface");
 
-    /* A same-app panel can become key without the whole app resigning active.
-     * Exercise that exact key -> non-key -> key transition: the receiver must
-     * cover pixels and release the local cursor while it is non-key, then
-     * restore both invariants when it owns the display surface again. */
+    /* Focus is not a security boundary. Exercise the exact key -> non-key ->
+     * key transition that Screen Sharing and macOS panels can cause: live
+     * pixels and local-cursor suppression stay continuous, while activation is
+     * requested independently. A secure GUI-session loss still closes both. */
     require_policy(1, 1, 1, 1, 0, 1, 0, "key lifecycle: owned");
-    require_policy(1, 1, 1, 0, 1, 0, 1, "key lifecycle: resigned");
+    require_policy(1, 1, 1, 0, 0, 1, 1, "key lifecycle: resigned");
     require_policy(1, 1, 1, 1, 0, 1, 0, "key lifecycle: reclaimed");
+    require_policy(1, 0, 1, 1, 1, 0, 0, "secure session: resigned");
     printf("appliance surface policy passed (secure blank/cursor ownership truth table)\n");
     return 0;
 }

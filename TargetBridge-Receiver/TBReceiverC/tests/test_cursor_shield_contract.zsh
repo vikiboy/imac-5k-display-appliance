@@ -15,7 +15,12 @@ rg -q 'addCursorRect:self\.bounds cursor:_transparentCursor' "$shield_source"
 rg -q '\[NSCursor hide\]' "$shield_source"
 rg -q '\[NSCursor unhide\]' "$shield_source"
 rg -q 'NSTrackingCursorUpdate' "$shield_source"
-rg -q 'NSTrackingActiveInKeyWindow' "$shield_source"
+rg -q 'NSTrackingActiveAlways' "$shield_source"
+if rg -q 'NSTrackingActiveInKeyWindow' "$shield_source"; then
+  print -u2 'cursor shield contract failed: cursor tracking still depends on key-window focus'
+  exit 1
+fi
+rg -q 'if \(_suppressLocalCursor\)' "$shield_source"
 rg -q 'NSApp\.isActive && self\.window\.isKeyWindow' "$shield_source"
 rg -q -- '- \(void\)cursorUpdate:' "$shield_source"
 rg -q 'NSWorkspaceSessionDidBecomeActiveNotification' "$receiver_source"
@@ -31,6 +36,16 @@ rg -q 'privacyBlankHandler' "$receiver_source"
 rg -q 'privacyResumeHandler' "$receiver_source"
 rg -q 'ensure_global_cursor_hidden' "$receiver_source"
 rg -q 'restore_global_cursor' "$receiver_source"
+
+# An ordinary focus transition must not revoke an unlocked display surface.
+# Keep this as both a positive exact-dependency assertion and a negative guard
+# against app/key conditions being reintroduced into the declaration.
+rg -U -q 'const BOOL publicSurfaceAvailable\s*=\s*_guiSessionActive\s*;' "$receiver_source"
+if rg -U -q 'const BOOL publicSurfaceAvailable\s*=\s*[^;]*(_appForeground|_window\.isKeyWindow)' "$receiver_source"; then
+  print -u2 'cursor shield contract failed: receiver surface still depends on app/key focus'
+  exit 1
+fi
+
 rg -q -- '- \(void\)requestCursorActivation' "$receiver_source"
 rg -q 'makeKeyAndOrderFront:nil' "$receiver_source"
 rg -q 'NSEC_PER_SEC' "$receiver_source"

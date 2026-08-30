@@ -59,7 +59,7 @@
     _cursorTrackingArea = [[NSTrackingArea alloc]
         initWithRect:self.bounds
              options:NSTrackingCursorUpdate |
-                     NSTrackingActiveInKeyWindow |
+                     NSTrackingActiveAlways |
                      NSTrackingInVisibleRect
                owner:self
             userInfo:nil];
@@ -72,7 +72,7 @@
 }
 
 - (void)resetCursorRects {
-    if (_suppressLocalCursor && NSApp.isActive && self.window.isKeyWindow) {
+    if (_suppressLocalCursor) {
         [self addCursorRect:self.bounds cursor:_transparentCursor];
     }
 }
@@ -92,12 +92,17 @@
             [NSCursor unhide];
             [NSCursor hide];
         }
-        [_transparentCursor set];
     } else if (_appKitCursorHidden) {
         [NSCursor unhide];
         _appKitCursorHidden = NO;
-    } else if (!_suppressLocalCursor && NSApp.isActive &&
-               self.window.isKeyWindow) {
+    }
+
+    /* Cursor rectangles remain effective across ordinary app/key focus
+     * changes. Reassert the transparent shape for the appliance surface even
+     * when AppKit's balanced foreground-only hide cannot be owned. */
+    if (_suppressLocalCursor) {
+        [_transparentCursor set];
+    } else if (NSApp.isActive && self.window.isKeyWindow) {
         [NSCursor.arrowCursor set];
     }
 }
