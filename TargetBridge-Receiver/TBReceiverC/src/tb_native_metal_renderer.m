@@ -334,6 +334,7 @@ size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
 @interface TBNativeMetalRenderer : NSObject
 - (instancetype)initRenderer;
 - (void)setVisible:(BOOL)visible;
+- (uint64_t)beginPresentationSession;
 - (int)renderPixelBuffer:(CVPixelBufferRef)pixelBuffer
                  cursorX:(int)cursorX
                  cursorY:(int)cursorY
@@ -380,6 +381,8 @@ size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
 - (int)claimInflightSlotForRender;
 - (void)recordCommandCompletionFailed:(BOOL)gpuFailed
                        gpuMilliseconds:(double)gpuMilliseconds;
+- (uint64_t)currentPresentationEpoch;
+- (void)recordDrawablePresentedForEpoch:(uint64_t)epoch;
 - (BOOL)isTeardownQuarantined;
 - (void)beginTeardown;
 - (BOOL)waitUntilIdleWithTimeoutNanos:(uint64_t)timeoutNanos;
@@ -701,6 +704,20 @@ size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
     }
 }
 
+- (uint64_t)beginPresentationSession {
+    if ([self isRenderAdmissionClosed] || ![self attachViewIfNeeded]) return 0;
+    [self updateDrawableSize];
+    /* The dedicated receiver keeps an opaque AppKit cover above this view.
+     * Leaving Metal drawable avoids nextDrawable starvation on a hidden layer. */
+    _view.hidden = NO;
+    os_unfair_lock_lock(&_statsLock);
+    _stats.presentation_epoch++;
+    if (_stats.presentation_epoch == 0) _stats.presentation_epoch++;
+    const uint64_t epoch = _stats.presentation_epoch;
+    os_unfair_lock_unlock(&_statsLock);
+    return epoch;
+}
+
 - (void)recordDrop {
     os_unfair_lock_lock(&_statsLock);
     _stats.dropped_frames++;
@@ -759,6 +776,22 @@ size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
         tb_native_metal_timing_bucket(gpuMilliseconds)]++;
     if (gpuMilliseconds > _stats.gpu_time_ms_max) {
         _stats.gpu_time_ms_max = gpuMilliseconds;
+    }
+    os_unfair_lock_unlock(&_statsLock);
+}
+
+- (uint64_t)currentPresentationEpoch {
+    os_unfair_lock_lock(&_statsLock);
+    const uint64_t epoch = _stats.presentation_epoch;
+    os_unfair_lock_unlock(&_statsLock);
+    return epoch;
+}
+
+- (void)recordDrawablePresentedForEpoch:(uint64_t)epoch {
+    os_unfair_lock_lock(&_statsLock);
+    _stats.presented_frames++;
+    if (epoch > _stats.last_presented_epoch) {
+        _stats.last_presented_epoch = epoch;
     }
     os_unfair_lock_unlock(&_statsLock);
 }
@@ -993,6 +1026,12 @@ size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
         [encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
         [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
         [encoder endEncoding];
+        const uint64_t presentationEpoch = [self currentPresentationEpoch];
+        __weak TBNativeMetalRenderer *weakSelf = self;
+        [drawable addPresentedHandler:^(id<MTLDrawable> presentedDrawable) {
+            (void)presentedDrawable;
+            [weakSelf recordDrawablePresentedForEpoch:presentationEpoch];
+        }];
         [commandBuffer presentDrawable:drawable];
 
         /* A queue/drawable drop must not become visible later through a cursor
@@ -1328,6 +1367,12 @@ size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
                    vertexStart:0
                    vertexCount:4];
         [render endEncoding];
+        const uint64_t presentationEpoch = [self currentPresentationEpoch];
+        __weak TBNativeMetalRenderer *weakSelf = self;
+        [drawable addPresentedHandler:^(id<MTLDrawable> presentedDrawable) {
+            (void)presentedDrawable;
+            [weakSelf recordDrawablePresentedForEpoch:presentationEpoch];
+        }];
         [commandBuffer presentDrawable:drawable];
 
         if (_latestFrame) {
@@ -1534,6 +1579,14 @@ void tb_native_metal_set_visible(void *renderer, int visible) {
     if (!renderer) return;
     @autoreleasepool {
         [(__bridge TBNativeMetalRenderer *)renderer setVisible:visible ? YES : NO];
+    }
+}
+
+uint64_t tb_native_metal_begin_presentation_session(void *renderer) {
+    if (!renderer) return 0;
+    @autoreleasepool {
+        return [(__bridge TBNativeMetalRenderer *)renderer
+            beginPresentationSession];
     }
 }
 

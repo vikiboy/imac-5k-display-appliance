@@ -26,6 +26,9 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources" "$APP_DIR/Conte
 cp "$ROOT/TBReceiverC/tbreceiver" "$APP_DIR/Contents/MacOS/$BIN_NAME"
 chmod +x "$APP_DIR/Contents/MacOS/$BIN_NAME"
 cp "$REPO_ROOT/TargetBridge-Shared/Languages/"*.json "$APP_DIR/Contents/Resources/Languages/"
+mkdir -p "$APP_DIR/Contents/Resources/Legal"
+cp "$REPO_ROOT/LICENSE" "$APP_DIR/Contents/Resources/Legal/LICENSE.txt"
+cp "$REPO_ROOT/NOTICE.md" "$APP_DIR/Contents/Resources/Legal/NOTICE.md"
 
 # Bundle dylib dependencies (ffmpeg and SDL) inside the .app.
 # Homebrew's SDL2 is currently sdl2-compat, which loads SDL3 at runtime via

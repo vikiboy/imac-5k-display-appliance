@@ -39,4 +39,4 @@ launchctl bootout "gui/$(id -u)" "$PLIST_PATH" >/dev/null 2>&1 || true
 launchctl enable "gui/$(id -u)/com.targetbridge.receiver5k"
 launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
 
-echo "TargetBridge 5K Receiver will start at login: $APP_PATH"
+echo "iMac 5K Display Appliance will start at login: $APP_PATH"

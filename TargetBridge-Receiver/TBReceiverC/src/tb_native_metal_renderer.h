@@ -22,6 +22,9 @@ extern "C" {
 struct tb_native_metal_stats {
     uint64_t submitted_frames;
     uint64_t completed_frames;
+    uint64_t presented_frames;
+    uint64_t presentation_epoch;
+    uint64_t last_presented_epoch;
     uint64_t gpu_error_frames;
     uint64_t dropped_frames;
     uint64_t drawable_requests;
@@ -59,6 +62,12 @@ size_t tb_native_metal_dpcm_next_upload_capacity(size_t current,
 void *tb_native_metal_create(void);
 void  tb_native_metal_destroy(void *renderer);
 void  tb_native_metal_set_visible(void *renderer, int visible);
+
+/* Starts a monotonically identified presentation session with the Metal view
+ * attached and drawable behind the receiver's own opaque cover. The caller
+ * removes that cover only when last_presented_epoch reaches the returned token.
+ * Returns zero if the native surface cannot be prepared. */
+uint64_t tb_native_metal_begin_presentation_session(void *renderer);
 
 /* Returns 1 when submitted, 0 for a temporary queue/drawable drop and -1
  * when the native renderer cannot handle the frame. */

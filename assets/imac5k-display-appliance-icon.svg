@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">iMac 5K Display Appliance icon</title>
+  <desc id="desc">A dark rounded square containing one illuminated 5K display made from a precise pixel grid.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#080d16"/>
+      <stop offset="1" stop-color="#17243a"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#42d7ff"/>
+      <stop offset="0.55" stop-color="#4e8dff"/>
+      <stop offset="1" stop-color="#8b6cff"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#background)"/>
+  <rect x="171" y="216" width="682" height="478" rx="52" fill="#060a11" stroke="#dcecff" stroke-width="24"/>
+  <rect x="207" y="252" width="610" height="406" rx="24" fill="url(#panel)"/>
+  <g fill="#ffffff" opacity="0.9">
+    <rect x="259" y="306" width="44" height="44" rx="10"/>
+    <rect x="325" y="306" width="44" height="44" rx="10" opacity="0.72"/>
+    <rect x="391" y="306" width="44" height="44" rx="10" opacity="0.5"/>
+    <rect x="457" y="306" width="44" height="44" rx="10" opacity="0.32"/>
+    <rect x="523" y="306" width="44" height="44" rx="10" opacity="0.5"/>
+    <rect x="589" y="306" width="44" height="44" rx="10" opacity="0.72"/>
+    <rect x="655" y="306" width="44" height="44" rx="10"/>
+  </g>
+  <path d="M412 694h200l20 82H392z" fill="#dcecff"/>
+  <rect x="322" y="766" width="380" height="30" rx="15" fill="#dcecff"/>
+  <text x="512" y="558" fill="#ffffff" font-family="-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif" font-size="170" font-weight="750" text-anchor="middle">5K</text>
+</svg>

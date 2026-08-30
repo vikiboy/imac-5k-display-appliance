@@ -15,9 +15,9 @@ If the receiver panel does not look correct, set the matching resolution on the 
 
 Related reading:
 
-- [docs/QuickStart-EN.md](docs/QuickStart-EN.md)
-- [docs/QuickStart-IT.md](docs/QuickStart-IT.md)
-- [docs/QuickStart-ZH.md](docs/QuickStart-ZH.md)
+- [docs/QuickStart-EN.md](QuickStart-EN.md)
+- [docs/QuickStart-IT.md](QuickStart-IT.md)
+- [docs/QuickStart-ZH.md](QuickStart-ZH.md)
 
 ## Display Profiles
 
@@ -80,7 +80,7 @@ Use this when:
 
 Related reading:
 
-- [docs/Addons.md#official-addons](docs/Addons.md#official-addons)
+- [docs/Addons.md#official-addons](Addons.md#official-addons)
 
 ## Audio Relay
 
@@ -95,8 +95,8 @@ The current implementation:
 
 Related reading:
 
-- [docs/audio.md](docs/audio.md)
-- [docs/Addons.md#official-addons](docs/Addons.md#official-addons)
+- [docs/audio.md](audio.md)
+- [docs/Addons.md#official-addons](Addons.md#official-addons)
 
 ## Input Dockstation
 
@@ -128,7 +128,7 @@ This is useful for KVM-like workflows where one keyboard and mouse should contro
 
 Related reading:
 
-- [docs/Addons.md#input-dockstation](docs/Addons.md#input-dockstation)
+- [docs/Addons.md#input-dockstation](Addons.md#input-dockstation)
 
 ## Receiver Device Controls
 
@@ -157,7 +157,7 @@ This makes it much easier to:
 
 Related reading:
 
-- [docs/Translations.md](docs/Translations.md)
+- [docs/Translations.md](Translations.md)
 
 ## Thunderbolt Networking Extras
 
@@ -175,4 +175,4 @@ These are standard macOS networking features that can live alongside TargetBridg
 
 Related reading:
 
-- [docs/Hardware.md#thunderbolt-networking](docs/Hardware.md#thunderbolt-networking)
+- [docs/Hardware.md#thunderbolt-networking](Hardware.md#thunderbolt-networking)

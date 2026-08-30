@@ -65,5 +65,5 @@ launchctl bootout "gui/$(id -u)" "$PLIST_PATH" >/dev/null 2>&1 || true
 launchctl enable "gui/$(id -u)/${LABEL}"
 launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
 
-echo "TargetBridge 5K Sender monitor mode enabled: $APP_PATH"
+echo "iMac 5K Display Sender monitor mode enabled: $APP_PATH"
 echo "If macOS requests Screen Recording once, grant it, quit the app, and run this installer once more."

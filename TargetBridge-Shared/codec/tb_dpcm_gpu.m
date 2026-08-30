@@ -1,6 +1,9 @@
 /* tb_dpcm_gpu.m — TBD2 encoder on the GPU. See tb_dpcm_gpu.h for the shape of
  * the pipeline and why it is split the way it is.
  *
+ * Provenance: this derivative integrates and hardens the GPU codec work from
+ * Aykut Alpgiray Ates's TargetBridge PR #158. Exact links are in NOTICE.md.
+ *
  * Everything the shaders and the host both need to agree on — the tile walk, the
  * residual transform, the group alignment rule — is duplicated here from
  * tb_dpcm.c because MSL cannot include C. That duplication is the main hazard in

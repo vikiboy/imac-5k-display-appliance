@@ -1096,15 +1096,15 @@ private struct TBDisplaySenderSessionSettingsSheet: View {
     private var inputGestureModeDetails: String {
         switch service.language {
         case .italian:
-            return "Decide come passare da uno slave all'altro quando 'Questo Mac e Master' e attivo. In modalita nativa, macOS continua a gestire normalmente il desktop del master. In modalita relay, TargetBridge usa il bordo sinistro/destro dello schermo e le hotkey Ctrl+Option+Freccia Sinistra/Destra per spostare il controllo allo slave precedente o successivo."
+            return "Decide come passare da uno slave all'altro quando 'Questo Mac e Master' e attivo. In modalita nativa, macOS continua a gestire normalmente il desktop del master. In modalita relay, iMac 5K Display usa il bordo sinistro/destro dello schermo e le hotkey Ctrl+Option+Freccia Sinistra/Destra per spostare il controllo allo slave precedente o successivo."
         case .english:
-            return "Chooses how to move control from one slave to another when 'This Mac is Master' is active. In native mode, macOS keeps handling the master's desktop normally. In relay mode, TargetBridge uses the left/right screen edge and the Ctrl+Option+Left/Right hotkeys to move control to the previous or next slave."
+            return "Chooses how to move control from one slave to another when 'This Mac is Master' is active. In native mode, macOS keeps handling the master's desktop normally. In relay mode, iMac 5K Display uses the left/right screen edge and the Ctrl+Option+Left/Right hotkeys to move control to the previous or next slave."
         case .german:
-            return "Legt fest, wie die Steuerung von einem Slave zum anderen wechselt, wenn 'Dieser Mac ist Master' aktiv ist. Im nativen Modus verwaltet macOS den Desktop des Masters normal weiter. Im Relay-Modus nutzt TargetBridge den linken/rechten Bildschirmrand und die Hotkeys Ctrl+Option+Links/Rechts, um zum vorherigen oder nächsten Slave zu wechseln."
+            return "Legt fest, wie die Steuerung von einem Slave zum anderen wechselt, wenn 'Dieser Mac ist Master' aktiv ist. Im nativen Modus verwaltet macOS den Desktop des Masters normal weiter. Im Relay-Modus nutzt iMac 5K Display den linken/rechten Bildschirmrand und die Hotkeys Ctrl+Option+Links/Rechts, um zum vorherigen oder nächsten Slave zu wechseln."
         case .french:
-            return "Définit comment déplacer le contrôle d’un slave à l’autre lorsque « Ce Mac est Master » est actif. En mode natif, macOS continue de gérer normalement le bureau du master. En mode relais, TargetBridge utilise les bords gauche et droit de l’écran ainsi que les raccourcis Ctrl+Option+Gauche/Droite pour déplacer le contrôle vers le slave précédent ou suivant."
+            return "Définit comment déplacer le contrôle d’un slave à l’autre lorsque « Ce Mac est Master » est actif. En mode natif, macOS continue de gérer normalement le bureau du master. En mode relais, iMac 5K Display utilise les bords gauche et droit de l’écran ainsi que les raccourcis Ctrl+Option+Gauche/Droite pour déplacer le contrôle vers le slave précédent ou suivant."
         case .chinese:
-            return "决定在“这台 Mac 是 Master”启用时如何在不同 slave 之间切换控制。原生模式下，macOS 继续正常处理 master 的桌面；relay 模式下，TargetBridge 会使用屏幕左右边缘以及 Ctrl+Option+Left/Right 热键，把控制切换到上一个或下一个 slave。"
+            return "决定在“这台 Mac 是 Master”启用时如何在不同 slave 之间切换控制。原生模式下，macOS 继续正常处理 master 的桌面；relay 模式下，iMac 5K Display 会使用屏幕左右边缘以及 Ctrl+Option+Left/Right 热键，把控制切换到上一个或下一个 slave。"
         }
     }
 
@@ -1156,15 +1156,15 @@ private struct TBDisplaySenderSessionSettingsSheet: View {
     private var inputPermissionWarningBody: String {
         switch service.language {
         case .italian:
-            return "Per usare 'Receiver e Master', questa app TargetBridge sul sender deve essere autorizzata in Privacy e Sicurezza > Accessibilita. Apri le impostazioni, abilita l'app che stai usando e poi riapri la sessione. Le scorciatoie configurate richiedono inoltre una sola autorizzazione macOS per controllare System Events."
+            return "Per usare 'Receiver e Master', iMac 5K Display Sender deve essere autorizzato in Privacy e Sicurezza > Accessibilita. Apri le impostazioni, abilita l'app che stai usando e poi riapri la sessione. Le scorciatoie configurate richiedono inoltre una sola autorizzazione macOS per controllare System Events."
         case .english:
-            return "To use 'Receiver is Master', this TargetBridge app on the sender must be allowed under Privacy & Security > Accessibility. Open the settings, enable the app you are actually running, then reopen the session. Configured shortcuts also require a one-time macOS permission to control System Events."
+            return "To use 'Receiver is Master', iMac 5K Display Sender must be allowed under Privacy & Security > Accessibility. Open the settings, enable the app you are actually running, then reopen the session. Configured shortcuts also require a one-time macOS permission to control System Events."
         case .german:
-            return "Um 'Empfänger ist Master' zu verwenden, muss diese TargetBridge-App auf dem Sender unter Datenschutz & Sicherheit > Bedienungshilfen erlaubt sein. Öffne die Einstellungen, aktiviere die wirklich verwendete App und öffne dann die Sitzung erneut. Konfigurierte Kurzbefehle benötigen außerdem einmalig die macOS-Erlaubnis, System Events zu steuern."
+            return "Um 'Empfänger ist Master' zu verwenden, muss iMac 5K Display Sender unter Datenschutz & Sicherheit > Bedienungshilfen erlaubt sein. Öffne die Einstellungen, aktiviere die wirklich verwendete App und öffne dann die Sitzung erneut. Konfigurierte Kurzbefehle benötigen außerdem einmalig die macOS-Erlaubnis, System Events zu steuern."
         case .french:
-            return "Pour utiliser « Le receiver est Master », cette app TargetBridge sur le sender doit être autorisée dans Confidentialité et sécurité > Accessibilité. Ouvrez les réglages, activez l’app que vous utilisez réellement, puis rouvrez la session. Les raccourcis configurés exigent aussi une autorisation macOS unique pour contrôler System Events."
+            return "Pour utiliser « Le receiver est Master », iMac 5K Display Sender doit être autorisé dans Confidentialité et sécurité > Accessibilité. Ouvrez les réglages, activez l’app que vous utilisez réellement, puis rouvrez la session. Les raccourcis configurés exigent aussi une autorisation macOS unique pour contrôler System Events."
         case .chinese:
-            return "要使用“Receiver 是 Master”，sender 上这份 TargetBridge 必须在“隐私与安全性 > 辅助功能”中被允许。打开设置，启用你当前运行的这份应用，然后重新打开会话。已配置的快捷键还需要一次性授权 TargetBridge 控制 System Events。"
+            return "要使用“Receiver 是 Master”，iMac 5K Display Sender 必须在“隐私与安全性 > 辅助功能”中被允许。打开设置，启用你当前运行的这份应用，然后重新打开会话。已配置的快捷键还需要一次性授权 iMac 5K Display Sender 控制 System Events。"
         }
     }
 
@@ -1220,15 +1220,15 @@ private struct TBDisplaySenderSessionSettingsSheet: View {
     private var receiverAccessibilityWarningBody: String {
         switch service.language {
         case .italian:
-            return "Con 'Questo Mac e Master', il receiver deve poter iniettare click e tastiera. Sul Mac receiver abilita TargetBridge Receiver in Privacy e Sicurezza > Accessibilita."
+            return "Con 'Questo Mac e Master', il receiver deve poter iniettare click e tastiera. Sul Mac receiver abilita iMac 5K Display Appliance in Privacy e Sicurezza > Accessibilita."
         case .english:
-            return "With 'This Mac is Master', the receiver must be allowed to inject clicks and keyboard events. On the receiver Mac, enable TargetBridge Receiver under Privacy & Security > Accessibility."
+            return "With 'This Mac is Master', the receiver must be allowed to inject clicks and keyboard events. On the receiver Mac, enable iMac 5K Display Appliance under Privacy & Security > Accessibility."
         case .german:
-            return "Bei 'Dieser Mac ist Master' muss der Empfänger Klicks und Tastatureingaben injizieren dürfen. Aktiviere auf dem Empfänger-Mac TargetBridge-Receiver unter Datenschutz & Sicherheit > Bedienungshilfen."
+            return "Bei 'Dieser Mac ist Master' muss der Empfänger Klicks und Tastatureingaben injizieren dürfen. Aktiviere auf dem Empfänger-Mac iMac 5K Display Appliance unter Datenschutz & Sicherheit > Bedienungshilfen."
         case .french:
-            return "Avec « Ce Mac est Master », le receiver doit pouvoir injecter les clics et les événements clavier. Sur le Mac receiver, activez TargetBridge Receiver dans Confidentialité et sécurité > Accessibilité."
+            return "Avec « Ce Mac est Master », le receiver doit pouvoir injecter les clics et les événements clavier. Sur le Mac receiver, activez iMac 5K Display Appliance dans Confidentialité et sécurité > Accessibilité."
         case .chinese:
-            return "在“这台 Mac 是 Master”模式下，receiver 必须被允许注入点击和键盘事件。请在 receiver Mac 的“隐私与安全性 > 辅助功能”中启用 TargetBridge Receiver。"
+            return "在“这台 Mac 是 Master”模式下，receiver 必须被允许注入点击和键盘事件。请在 receiver Mac 的“隐私与安全性 > 辅助功能”中启用 iMac 5K Display Appliance。"
         }
     }
 
@@ -1245,15 +1245,15 @@ private struct TBDisplaySenderSessionSettingsSheet: View {
     private var receiverInputMonitoringWarningBody: String {
         switch service.language {
         case .italian:
-            return "Con 'Receiver e Master', il Mac receiver deve poter leggere tastiera e mouse locali. Sul receiver abilita TargetBridge Receiver in Privacy e Sicurezza > Monitoraggio input."
+            return "Con 'Receiver e Master', il Mac receiver deve poter leggere tastiera e mouse locali. Sul receiver abilita iMac 5K Display Appliance in Privacy e Sicurezza > Monitoraggio input."
         case .english:
-            return "With 'Receiver is Master', the receiver Mac must be allowed to read local keyboard and mouse input. On the receiver, enable TargetBridge Receiver under Privacy & Security > Input Monitoring."
+            return "With 'Receiver is Master', the receiver Mac must be allowed to read local keyboard and mouse input. On the receiver, enable iMac 5K Display Appliance under Privacy & Security > Input Monitoring."
         case .german:
-            return "Bei 'Empfänger ist Master' muss der Empfänger-Mac lokale Tastatur- und Mauseingaben lesen dürfen. Aktiviere dort TargetBridge-Receiver unter Datenschutz & Sicherheit > Eingabeüberwachung."
+            return "Bei 'Empfänger ist Master' muss der Empfänger-Mac lokale Tastatur- und Mauseingaben lesen dürfen. Aktiviere dort iMac 5K Display Appliance unter Datenschutz & Sicherheit > Eingabeüberwachung."
         case .french:
-            return "Avec « Le receiver est Master », le Mac receiver doit pouvoir lire les entrées clavier et souris locales. Sur le receiver, activez TargetBridge Receiver dans Confidentialité et sécurité > Surveillance des entrées."
+            return "Avec « Le receiver est Master », le Mac receiver doit pouvoir lire les entrées clavier et souris locales. Sur le receiver, activez iMac 5K Display Appliance dans Confidentialité et sécurité > Surveillance des entrées."
         case .chinese:
-            return "在“Receiver 是 Master”模式下，receiver Mac 必须被允许读取本地键盘和鼠标输入。请在 receiver 上的“隐私与安全性 > 输入监控”中启用 TargetBridge Receiver。"
+            return "在“Receiver 是 Master”模式下，receiver Mac 必须被允许读取本地键盘和鼠标输入。请在 receiver 上的“隐私与安全性 > 输入监控”中启用 iMac 5K Display Appliance。"
         }
     }
 

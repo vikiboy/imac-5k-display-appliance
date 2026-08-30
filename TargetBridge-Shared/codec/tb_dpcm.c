@@ -1,6 +1,9 @@
 /* tb_dpcm.c — reference encoder/decoder for TBD2. See tb_dpcm.h for the format
  * and the reasoning behind its shape.
  *
+ * Provenance: this derivative integrates and hardens the TBD1/TBD2 work from
+ * Aykut Alpgiray Ates's TargetBridge PR #158. Exact links are in NOTICE.md.
+ *
  * Both directions here are correctness oracles, not production paths. The
  * decoder performs ~44 million bit extractions per 5K frame, which the
  * receiver's i5 cannot afford on top of a TCP stack that already saturates a

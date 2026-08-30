@@ -14,7 +14,7 @@ struct TBDisplaySenderApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("TargetBridge", id: "main") {
+        WindowGroup("iMac 5K Display", id: "main") {
             TBDisplaySenderContentView(service: service)
                 .frame(minWidth: 540)
                 .task {

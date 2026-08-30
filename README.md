@@ -1,181 +1,135 @@
-![TargetBridge Overview](images/connection-diagram.svg)
+# iMac 5K Display Appliance
 
-# TargetBridge
+Turn one specific 2017 27-inch 5K iMac into a native-Retina extended display
+for a MacBook, without opening the iMac or replacing its panel controller.
 
-Apple dropped Target Display Mode in late 2014 with the 5K iMac — and it never came back.
+> **Personal project, not a product promise.** I built this for my own hardware.
+> I am not committing to support other machines, maintain a public roadmap, or
+> develop features on request. If it is useful, you are welcome to study, use,
+> fork, and improve it under the repository's MIT license.
 
-TargetBridge brings it back via software, streaming your screen at up to 5K over a direct Thunderbolt connection, e.g. to an iMac.
+This is an independent, hardware-specific derivative of
+[TargetBridge](https://github.com/swellweb/targetBridge). It is not an upstream
+TargetBridge release, is not maintained or endorsed by TargetBridge's authors,
+and is not affiliated with Apple. The complete lineage and third-party credits
+are in [NOTICE.md](NOTICE.md).
 
-It's free and open source software, no subscription and no dongle required.
+![Lossless 5K display-appliance pipeline](docs/images/imac2017/pipeline.svg)
 
-> **2017 iMac 5K appliance branch:** this private development branch adds a
-> dedicated lossless DPCM/Metal path and plug-in launch agents for a 2017
-> 27-inch 5K iMac. It is not the upstream prebuilt release. Start with the
-> [2017 iMac overview](docs/iMac-2017-5K.md), follow the
-> [reproduction/install guide](docs/repro/imac-2017-5K/README.md), and read the
-> [plain-language engineering account](docs/blog/imac-2017-5k-software-display.md).
-> Until the final hardware result linked there passes, treat it as an appliance
-> experiment rather than an official TargetBridge release.
+## Current status
 
-If it is useful to you, spread the news and give us a ⭐ on GitHub.
+The native display path is working on the owner's MacBook and 2017 iMac: macOS
+creates a real arranged extended display at 2560 × 1440 logical points backed by
+5120 × 2880 pixels, sends lossless 8-bit 4:4:4 Display P3 frames over
+Thunderbolt Bridge, and presents them on the iMac with Metal.
 
-## Support and Thanks
+The implementation and component tests are complete. Final release
+qualification is still in progress: the immutable installed sender needs its
+one-time macOS Screen Recording re-grant, followed by the recorded animated
+5K60, reconnect, sleep/wake, and one-hour resource soak. Until those gates pass,
+this repository is an engineering appliance build—not a production release or
+a claim of literal zero latency.
 
-TargetBridge is free and open source. Sponsorship is never required, but monthly
-and one-time contributions make it possible to reserve time for macOS
-compatibility, bug fixes, hardware testing, and future useful tools for Mac.
+| Area | Status |
+|---|---|
+| Native 2× Retina geometry | Implemented and observed on the test setup |
+| Lossless 4:4:4 TBD2/DPCM path | Implemented; CPU/GPU suites pass |
+| Native Metal 2017-iMac receiver | Implemented; lifecycle fixture passes |
+| Native macOS display arrangement | Working alongside the Dell and built-in display |
+| Automatic login/reconnect | Implemented; final unplug/sleep acceptance pending |
+| Receiver idle experience | Dark native waiting surface, truthful connection states, and idle-only controls |
+| RAM, storage, file-descriptor, and thermal soak | Final post-fix one-hour run pending |
+| Public release | None; the GitHub repository remains private |
 
-Thank you to everyone supporting TargetBridge through GitHub Sponsors. Your
-contributions help keep the project moving forward.
+## What this is
 
-[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?logo=github)](https://github.com/sponsors/swellweb)
+The iMac does not become a passive DisplayPort monitor. It remains booted into
+macOS and runs a small receiver. The MacBook creates a virtual Retina display,
+captures its pixels, and sends them over IP on the direct Thunderbolt cable.
+The receiver presents those pixels fullscreen on the built-in 5K panel.
 
-## Contributors
+That means the iMac can still run services such as SSH in the background, but
+heavy work on it can compete with display latency. It also means this cannot
+show the MacBook's FileVault, Recovery, or pre-login screen.
 
-Thank you to everyone who tests TargetBridge on real hardware, reports issues,
-and improves the project. A special thank-you for this release goes to:
+## What came from upstream, and what changed here
 
-- [@aalpgiray](https://github.com/aalpgiray) for receiver brightness, volume, Night Shift, and True Tone controls.
-- [@preggocl](https://github.com/preggocl) for the physical Receiver display profile and the software decode fallback.
-- [@Betafer](https://github.com/Betafer) for input-queue safety and the low-latency Receiver Master cursor overlay.
+TargetBridge solved the product-shaped foundation: sender and receiver apps,
+virtual extended and mirrored displays, Bonjour discovery, Thunderbolt Bridge
+transport, encoded 5K streaming, input features, reconnect behavior, and a raw
+NV12 diagnostic path.
 
-## TargetBridge 3.5.1
+This derivative focuses tightly on one fidelity and appliance goal:
 
-TargetBridge 3.5.1 is a maintenance release focused on safer input control,
-accurate Receiver display profiles, and improved compatibility with older Macs:
+| Upstream foundation | Work in this derivative |
+|---|---|
+| H.264/HEVC display streaming | Lossless TBD2/DPCM transport for crisp desktop text |
+| General display profiles | Exact 2560 × 1440 points → 5120 × 2880 pixels gate |
+| General network discovery | Pinned, fail-closed Thunderbolt Bridge selection |
+| Native-Metal receiver prior art | Radeon Pro 575 lifecycle, buffer-reuse, and terminal-failure hardening |
+| Interactive sender/receiver apps | Login launch agents, automatic reconnect, and appliance power lifecycle |
+| General receiver window | Quiet appliance states and presentation-confirmed reconnect handoff |
+| General cursor/input modes | One native cursor for this dedicated lossless receiver |
+| Broad upstream documentation | Hardware-specific reproduction evidence and resource acceptance gates |
 
-- preserve keyboard and mouse release events when the Receiver input queue is under pressure
-- use the low-latency cursor overlay in Receiver Master mode to avoid duplicate cursors
-- advertise the Receiver's actual panel geometry instead of always reporting a fixed 5K profile
-- fall back safely to software video decode when VideoToolbox cannot decode a stream on older hardware
+This work also integrates and hardens earlier lossless-codec work by Aykut
+Alpgiray Ates and native-Metal receiver work by Betafer. It does not claim those
+inventions. Exact pull requests and commits are recorded in
+[NOTICE.md](NOTICE.md) and the [engineering account](docs/blog/imac-2017-5k-software-display.md).
 
-It also keeps the established multi-Mac workspace features:
+## Reproduce the setup
 
-- mirror mode and extended desktop mode
-- multiple receivers from one sender
-- experimental `Network Link` transport in addition to Thunderbolt Bridge
-- streamed system audio
-- shared JSON localization for Sender and Receiver
-- official manifest-based addons
-- `Input Dockstation` with master/slave keyboard and mouse control
-- text clipboard sync tied to the active input master
-- remote brightness control from the sender
-- automatic receiver discovery and extended-layout restore
-- remote connection automation via URL scheme, CLI wrapper, launch args, and SSH recipes
-- remembers the selected virtual-display resolution for each receiver
-- configurable Receiver Master shortcuts, including protected macOS shortcuts such as Space switching
-- mock sender, parser tests, and a loopback smoke test for Receiver resilience without a second Mac
-- improved direct `Duplicate Desktop` startup, with a short wait for the virtual display to become available
-- permission cards refresh when TargetBridge returns from macOS Privacy & Security settings
-- Receiver stays on its waiting screen until a real session starts, avoiding a distracting fullscreen flash
-- experimental `5K 60` profile for recent Apple Silicon; use `5K 48` for the most stable work sessions
+Use the hardware-specific instructions rather than upstream release downloads:
 
-## Feature Guides
+1. Read the [2017 iMac overview](docs/iMac-2017-5K.md).
+2. Follow the [build, install, verification, and rollback guide](docs/repro/imac-2017-5K/README.md).
+3. Grant Screen Recording only after the sender is installed at its stable path.
+4. Verify a true Thunderbolt Bridge path and the exact Retina point/pixel pair.
+5. Run the documented live and resource gates before enabling unattended login.
 
-- Overview hub: [docs/Features.md](docs/Features.md)
-- Mirror mode and Extended Desktop: [docs/Features.md#display-modes](docs/Features.md#display-modes)
-- Guided configuration check: [docs/Features.md#guided-configuration-check](docs/Features.md#guided-configuration-check)
-- Multi-receiver layouts: [docs/Features.md#multi-receiver-workflows](docs/Features.md#multi-receiver-workflows)
-- Network Link (experimental): [docs/Features.md#network-link-experimental](docs/Features.md#network-link-experimental)
-- Audio Relay: [docs/Features.md#audio-relay](docs/Features.md#audio-relay)
-- Input Dockstation, clipboard sync, master/slave roles, and Receiver Master shortcuts: [docs/Features.md#input-dockstation](docs/Features.md#input-dockstation)
-- Receiver device controls (brightness, volume, Night Shift, True Tone): [docs/Features.md#receiver-device-controls](docs/Features.md#receiver-device-controls)
-- Remote connection & automation (URL scheme, launch args, SSH, login/wake): [docs/Automation.md](docs/Automation.md)
-- Measured connection-path selection (Thunderbolt, USB/USB4, Ethernet, Wi-Fi): [docs/Automation.md#1-targetbridge-cli](docs/Automation.md#1-targetbridge-cli)
-- Shared translations (English, Italian, German, French, and Chinese): [docs/Features.md#shared-translations](docs/Features.md#shared-translations)
-- Thunderbolt networking extras (SSH/SFTP, file sharing, Internet Sharing): [docs/Features.md#thunderbolt-networking-extras](docs/Features.md#thunderbolt-networking-extras)
+The current app bundles retain some `TargetBridge` executable and bundle names
+for source compatibility and stable macOS privacy identity while qualification
+is underway. The repository, documentation, appliance profile, evidence, and
+visible receiver waiting state are distinct. Bundle-identity migration must be
+a deliberate versioned step because macOS may require Screen Recording again
+when an app's path or code identity changes.
 
-## Core Features
+## Evidence, not marketing
 
-- Sender can stream either a mirrored desktop or an extended virtual display. See [Display Modes](docs/Features.md#display-modes).
-- One sender can drive multiple receiver Macs over separate cables. See [Multi-Receiver Workflows](docs/Features.md#multi-receiver-workflows).
-- Stream profiles range from `2560 x 1440` to `5120 x 2880` with H.264/HEVC selection based on capability. `5K 60` is an experimental profile for recent Apple Silicon; `5K 48` remains recommended for reliable daily work. See [Display Modes](docs/Features.md#display-modes).
-- Receiver discovery is automatic over Bonjour. Extended-display arrangement is remembered per receiver when possible. See [Display Modes](docs/Features.md#display-modes).
-- Thunderbolt Bridge remains the primary low-latency path, with `Network Link` available as an experimental addon-gated transport. See [Network Link](docs/Features.md#network-link-experimental).
-- The Sender menu can control a connected receiver's brightness, volume, Night Shift, and True Tone when supported. See [Receiver Device Controls](docs/Features.md#receiver-device-controls).
+The project records what was actually tested, including failures and remaining
+gates. It does not reuse upstream screenshots.
 
-## Official Addons
+![macOS arranging the iMac appliance beside the Dell and built-in display](docs/images/imac2017/native-display-picker.png)
 
-TargetBridge now has a conservative manifest-based addon system. Official manifests ship with the app, and user manifests can be imported from the settings UI.
+- Plain-language build story: [docs/blog/imac-2017-5k-software-display.md](docs/blog/imac-2017-5k-software-display.md)
+- Reproduction guide and result schema: [docs/repro/imac-2017-5K/README.md](docs/repro/imac-2017-5K/README.md)
+- Visual ownership and sanitization: [docs/ASSET-PROVENANCE.md](docs/ASSET-PROVENANCE.md)
+- Private-to-public release gate: [docs/PUBLICATION-CHECKLIST.md](docs/PUBLICATION-CHECKLIST.md)
 
-- `Network Link`: local Ethernet/Wi-Fi transport path for the same display pipeline. See [docs/Addons.md#official-addons](docs/Addons.md#official-addons) and [Network Link](docs/Features.md#network-link-experimental).
-- `Audio Relay`: streamed system audio from sender to receiver. See [docs/audio.md](docs/audio.md) and [docs/Addons.md#official-addons](docs/Addons.md#official-addons).
-- `Input Dockstation`: keyboard/mouse relay, master/slave roles, slave switching, and text clipboard sync. See [docs/Addons.md#input-dockstation](docs/Addons.md#input-dockstation) and [Input Dockstation](docs/Features.md#input-dockstation).
+Raw logs, system profiles, crash reports, and unredacted screenshots are not
+published because they can contain names, paths, hostnames, addresses, device
+identifiers, or screen contents.
 
-## Requirements
+## Security and operational limits
 
-- Sender: Apple Silicon Mac (M1 or later) or Intel Mac, macOS 14 Sonoma or later. Apple Silicon remains the primary tested path; Intel Sender builds are available for broader testing.
-- Receiver: Intel or Apple Silicon Mac, macOS 11 Big Sur or later
-- Thunderbolt cable
-- See also [docs/Hardware.md](docs/Hardware.md) for hardware details, tested cables, adapters, and Thunderbolt networking ideas.
+The experimental TCP display protocol is not authenticated or encrypted. Use
+it only on the trusted direct Thunderbolt link; do not expose port 54321 to an
+untrusted LAN. See [SECURITY.md](SECURITY.md).
 
-## Download
+No kernel extension, firmware patch, privileged daemon, or iMac disassembly is
+used. Runtime queues are bounded, frames are not written to disk, logs are
+bounded, and the final acceptance includes RAM, file-descriptor, storage,
+thermal, and battery measurements.
 
-**[→ Download latest release (pre-built apps, no Xcode needed)](https://github.com/swellweb/targetBridge/releases/latest)**
+## License and credit
 
-- `TargetBridge-arm64.app.zip` — Sender (for Apple Silicon Macs)
-- `TargetBridge-x86_64.app.zip` — Sender (for Intel Macs)
-- `TargetBridge-Receiver-arm64.app.zip` — Apple Silicon Receiver (use machine as monitor for sender)
-- `TargetBridge-Receiver-x86_64.app.zip` — Intel Receiver (use machine as monitor for sender)
+The repository retains the upstream MIT license and Marco Caciotti's original
+copyright notice unchanged in [LICENSE](LICENSE). The derivative modifications
+are offered under the same MIT terms. When redistributing this repository or a
+substantial portion of it, keep the required copyright and permission notices.
+See [NOTICE.md](NOTICE.md) for authorship, code provenance, and the no-endorsement
+statement. See [CONTRIBUTING.md](CONTRIBUTING.md) for the fork-first,
+no-support-SLA contribution posture.
 
-Unzip and double-click. On first launch, grant Screen Recording permission to the sender.
-
-If you build from source, app outputs go into `build/` folder.
-
-> **"App is damaged" warning?** macOS quarantines unsigned apps downloaded from the browser. Run this in Terminal, then try again:
-> ```bash
-> xattr -cr ~/Downloads/TargetBridge-arm64.app
-> xattr -cr ~/Downloads/TargetBridge-Receiver-arm64.app
-> xattr -cr ~/Downloads/TargetBridge-Receiver-x86_64.app
-> ```
-
-## Permissions
-
-- Sender usually needs `Screen Recording`.
-- `Input Dockstation` may also require `Accessibility` and `Input Monitoring`, depending on the active role.
-- Receiver may require `Accessibility` or `Input Monitoring` when it participates in input relay.
-- In practice, `Input Dockstation` is a two-sided feature: one Mac captures input, the other injects it, so permissions may be needed on both Sender and Receiver.
-- See [docs/Addons.md#input-dockstation](docs/Addons.md#input-dockstation) for the permission matrix.
-
-## Quick start
-
-- Italian: [docs/QuickStart-IT.md](docs/QuickStart-IT.md)
-- English: [docs/QuickStart-EN.md](docs/QuickStart-EN.md)
-- 中文: [docs/QuickStart-ZH.md](docs/QuickStart-ZH.md)
-- Translation guide: [docs/Translations.md](docs/Translations.md)
-
-## Detailed Documentation
-
-- Feature overview: [docs/Features.md](docs/Features.md)
-- Remote connection & automation: [docs/Automation.md](docs/Automation.md)
-- Addon manifests and capability model: [docs/Addons.md](docs/Addons.md)
-- Audio transport internals: [docs/audio.md](docs/audio.md)
-- Hardware, cables, adapters, and Thunderbolt Bridge networking: [docs/Hardware.md](docs/Hardware.md)
-- Translation workflow: [docs/Translations.md](docs/Translations.md)
-- Testing without hardware (unit tests, mock sender, loopback smoke): [docs/Testing.md](docs/Testing.md)
-- Binary verification: [docs/verify-binaries.md](docs/verify-binaries.md)
-
-## Licensing and brand
-
-TargetBridge source code is available under the MIT License. Please preserve the
-required copyright and license notices when redistributing copies or substantial
-portions of the software.
-
-Project branding and commercial use are handled separately from the source code
-license. For now, the canonical source-code license is:
-
-- [LICENSE](LICENSE)
-
-## Screenshots
-
-**Sender (Apple Silicon Mac) — session dashboard:**
-![TargetBridge Sender dashboard](images/sender-dashboard.png)
-
-**Receiver — ready for a sender stream:**
-![TargetBridge Receiver dashboard](images/receiver-dashboard.png)
-
-**macOS Displays — extended desktop target:**
-![TargetBridge extended desktop](images/display-extend.png)
-
-**macOS Displays — mirrored desktop target:**
-![TargetBridge mirrored desktop](images/display-mirror.png)
+Apple, MacBook Pro, iMac, Retina, and Thunderbolt are trademarks of their
+respective owners.

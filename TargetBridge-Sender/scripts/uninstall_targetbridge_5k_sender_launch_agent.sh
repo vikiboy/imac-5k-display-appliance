@@ -10,4 +10,4 @@ launchctl bootout "gui/$(id -u)" "$PLIST_PATH" >/dev/null 2>&1 || true
 [[ ! -e "$ENABLED_PATH" ]] || unlink "$ENABLED_PATH"
 [[ ! -e "$PLIST_PATH" ]] || unlink "$PLIST_PATH"
 
-echo "TargetBridge 5K Sender monitor mode disabled. The app and display arrangement were left installed."
+echo "iMac 5K Display Sender monitor mode disabled. The app and display arrangement were left installed."

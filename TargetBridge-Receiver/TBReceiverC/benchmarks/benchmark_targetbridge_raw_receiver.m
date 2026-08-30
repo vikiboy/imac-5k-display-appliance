@@ -84,6 +84,22 @@ static dispatch_source_t termination_signal_source(
     return source;
 }
 
+@interface TBReceiverMenuController : NSObject
+- (void)requestGracefulQuit:(id)sender;
+@end
+
+@implementation TBReceiverMenuController
+- (void)requestGracefulQuit:(id)sender {
+    (void)sender;
+    // Reuse the same dispatch-signal shutdown path as launchd and Terminal.
+    // Calling NSApp terminate: directly could bypass cursor, power, socket, and
+    // bounded Metal cleanup while a session is active.
+    if (kill(getpid(), SIGTERM) != 0) {
+        [NSApp terminate:nil];
+    }
+}
+@end
+
 static void fail(const char *operation) {
     fprintf(stderr, "TB_PROTOCOL_METAL error=%s errno=%d message=%s\n",
             operation, errno, strerror(errno));
@@ -520,7 +536,7 @@ static void on_bonjour_register(DNSServiceRef service,
 
     TXTRecordRef txt;
     TXTRecordCreate(&txt, 0, NULL);
-    static const char receiverName[] = "TargetBridge 5K Receiver";
+    static const char receiverName[] = "iMac 5K Display Appliance";
     static const char panelName[] = "2017 27-inch Retina 5K iMac";
     static const char panelWidth[] = "5120";
     static const char panelHeight[] = "2880";
@@ -570,7 +586,7 @@ static void on_bonjour_register(DNSServiceRef service,
                           name:(const char *)name {
     fprintf(stderr, "TB_PROTOCOL_METAL bonjour=%s name=%s error=%d tbIP=%s dpcm=%s\n",
             error == kDNSServiceErr_NoError ? "published" : "failed",
-            name ? name : "TargetBridge 5K Receiver",
+            name ? name : "iMac 5K Display Appliance",
             (int)error,
             _lastThunderboltIP[0] ? _lastThunderboltIP : "none",
             _supportsDPCM ? "true" : "false");
@@ -739,10 +755,40 @@ int main(int argc, const char *argv[]) {
         // so it must explicitly complete the AppKit launch lifecycle before it
         // asks LaunchServices to activate and order a physical window.
         [NSApp finishLaunching];
+
+        // The display surface is intentionally quiet, but this is still a Mac
+        // application rather than a passive input. A minimal native app menu
+        // keeps About and Quit discoverable when the pointer reveals the menu
+        // bar, without leaving controls over a live stream.
+        NSMenu *mainMenu = [[NSMenu alloc] initWithTitle:@""];
+        NSMenuItem *appMenuItem = [[NSMenuItem alloc]
+            initWithTitle:@"iMac 5K Display Appliance"
+                   action:nil
+            keyEquivalent:@""];
+        NSMenu *appMenu = [[NSMenu alloc]
+            initWithTitle:@"iMac 5K Display Appliance"];
+        static TBReceiverMenuController *menuController;
+        menuController = [[TBReceiverMenuController alloc] init];
+        NSMenuItem *aboutItem = [[NSMenuItem alloc]
+            initWithTitle:@"About iMac 5K Display Appliance"
+                   action:@selector(orderFrontStandardAboutPanel:)
+            keyEquivalent:@""];
+        aboutItem.target = NSApp;
+        [appMenu addItem:aboutItem];
+        [appMenu addItem:[NSMenuItem separatorItem]];
+        NSMenuItem *quitItem = [[NSMenuItem alloc]
+            initWithTitle:@"Quit iMac 5K Display Appliance"
+                   action:@selector(requestGracefulQuit:)
+            keyEquivalent:@"q"];
+        quitItem.target = menuController;
+        [appMenu addItem:quitItem];
+        appMenuItem.submenu = appMenu;
+        [mainMenu addItem:appMenuItem];
+        NSApp.mainMenu = mainMenu;
+
         NSApp.presentationOptions =
             NSApplicationPresentationHideDock |
-            NSApplicationPresentationHideMenuBar |
-            NSApplicationPresentationDisableAppleMenu;
+            NSApplicationPresentationHideMenuBar;
         CGDirectDisplayID selectedDisplayID = kCGNullDirectDisplay;
         NSScreen *screen = native_builtin_5k_screen(&selectedDisplayID);
         if (!screen || !MTLCreateSystemDefaultDevice()) {
@@ -758,9 +804,12 @@ int main(int argc, const char *argv[]) {
                           defer:NO
                          screen:screen];
         [window setFrame:screen.frame display:NO];
-        window.title = @"TargetBridge 5K Receiver";
+        window.title = @"iMac 5K Display Appliance";
         window.releasedWhenClosed = NO;
-        window.backgroundColor = NSColor.systemPurpleColor;
+        window.backgroundColor = [NSColor colorWithSRGBRed:0.035
+                                                    green:0.051
+                                                     blue:0.086
+                                                    alpha:1.0];
         window.opaque = YES;
         // SSH-launched accessory apps can otherwise land on a non-active Space:
         // frames render successfully, but the user sees only the desktop (or
@@ -776,15 +825,90 @@ int main(int argc, const char *argv[]) {
         window.hidesOnDeactivate = NO;
         window.sharingType = NSWindowSharingReadOnly;
 
+        NSView *idleOverlay = [[NSView alloc]
+            initWithFrame:window.contentView.bounds];
+        idleOverlay.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        idleOverlay.wantsLayer = YES;
+        idleOverlay.layer.backgroundColor = [NSColor colorWithSRGBRed:0.035
+                                                                green:0.051
+                                                                 blue:0.086
+                                                                alpha:1.0].CGColor;
+        [window.contentView addSubview:idleOverlay];
+
+        NSTextField *titleLabel = [NSTextField labelWithString:
+            @"iMac 5K Display Appliance"];
+        titleLabel.alignment = NSTextAlignmentCenter;
+        titleLabel.textColor = [NSColor colorWithSRGBRed:0.90
+                                                    green:0.95
+                                                     blue:1.00
+                                                    alpha:1.0];
+        titleLabel.font = [NSFont systemFontOfSize:44.0
+                                         weight:NSFontWeightSemibold];
+
         NSTextField *statusLabel = [NSTextField labelWithString:
-            @"TargetBridge 5K Receiver\nWaiting for the MacBook…"];
-        statusLabel.frame = window.contentView.bounds;
-        statusLabel.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+            @"Waiting for the MacBook"];
         statusLabel.alignment = NSTextAlignmentCenter;
-        statusLabel.textColor = NSColor.whiteColor;
-        statusLabel.font = [NSFont boldSystemFontOfSize:44.0];
-        statusLabel.maximumNumberOfLines = 2;
-        [window.contentView addSubview:statusLabel];
+        statusLabel.textColor = [NSColor colorWithSRGBRed:0.32
+                                                     green:0.75
+                                                      blue:1.00
+                                                     alpha:1.0];
+        statusLabel.font = [NSFont systemFontOfSize:22.0
+                                          weight:NSFontWeightMedium];
+
+        NSTextField *instructionLabel = [NSTextField labelWithString:
+            @"Connect the Thunderbolt cable; the display starts automatically."];
+        instructionLabel.alignment = NSTextAlignmentCenter;
+        instructionLabel.textColor = [NSColor colorWithWhite:0.72 alpha:1.0];
+        instructionLabel.font = [NSFont systemFontOfSize:15.0
+                                               weight:NSFontWeightRegular];
+
+        // A small native pull-down is visible only while idle. It makes the
+        // appliance controllable without placing chrome over the live display.
+        NSPopUpButton *optionsButton = [[NSPopUpButton alloc]
+            initWithFrame:NSZeroRect pullsDown:YES];
+        [optionsButton removeAllItems];
+        [optionsButton addItemWithTitle:@"Options"];
+        NSMenuItem *idleAboutItem = [[NSMenuItem alloc]
+            initWithTitle:@"About iMac 5K Display Appliance"
+                   action:@selector(orderFrontStandardAboutPanel:)
+            keyEquivalent:@""];
+        idleAboutItem.target = NSApp;
+        [optionsButton.menu addItem:idleAboutItem];
+        [optionsButton.menu addItem:[NSMenuItem separatorItem]];
+        NSMenuItem *idleQuitItem = [[NSMenuItem alloc]
+            initWithTitle:@"Quit iMac 5K Display Appliance"
+                   action:@selector(requestGracefulQuit:)
+            keyEquivalent:@""];
+        idleQuitItem.target = menuController;
+        [optionsButton.menu addItem:idleQuitItem];
+        optionsButton.controlSize = NSControlSizeLarge;
+        optionsButton.font = [NSFont systemFontOfSize:14.0
+                                               weight:NSFontWeightMedium];
+        optionsButton.accessibilityLabel = @"Display appliance options";
+
+        NSStackView *idleStack = [NSStackView stackViewWithViews:@[
+            titleLabel,
+            statusLabel,
+            instructionLabel,
+            optionsButton
+        ]];
+        idleStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+        idleStack.alignment = NSLayoutAttributeCenterX;
+        idleStack.spacing = 14.0;
+        idleStack.translatesAutoresizingMaskIntoConstraints = NO;
+        [idleOverlay addSubview:idleStack];
+        [NSLayoutConstraint activateConstraints:@[
+            [idleStack.centerXAnchor
+                constraintEqualToAnchor:idleOverlay.centerXAnchor],
+            [idleStack.centerYAnchor
+                constraintEqualToAnchor:idleOverlay.centerYAnchor],
+            [idleStack.leadingAnchor
+                constraintGreaterThanOrEqualToAnchor:idleOverlay.leadingAnchor
+                                             constant:48.0],
+            [idleStack.trailingAnchor
+                constraintLessThanOrEqualToAnchor:idleOverlay.trailingAnchor
+                                          constant:-48.0]
+        ]];
         [NSApp activateIgnoringOtherApps:YES];
         [window makeKeyAndOrderFront:nil];
         [window orderFrontRegardless];
@@ -820,6 +944,79 @@ int main(int argc, const char *argv[]) {
             [window close];
             return 70;
         }
+        /* Arm the reconnect cover before the first Metal view is attached.
+         * Frames can render while held, but the layer becomes visible only
+         * after the receiver observes a successful GPU completion. */
+        tb_native_metal_set_visible(renderer, 0);
+
+        void (^showIdleState)(NSString *, NSString *) =
+            ^(NSString *status, NSString *instruction) {
+            void (^updates)(void) = ^{
+                [CATransaction begin];
+                [CATransaction setDisableActions:YES];
+                statusLabel.stringValue = status;
+                instructionLabel.stringValue = instruction;
+                idleOverlay.hidden = NO;
+                idleOverlay.accessibilityHidden = NO;
+                [window.contentView addSubview:idleOverlay
+                                     positioned:NSWindowAbove
+                                     relativeTo:nil];
+                tb_native_metal_set_visible(renderer, 0);
+                [window makeKeyAndOrderFront:nil];
+                [window orderFrontRegardless];
+                [window displayIfNeeded];
+                [window.contentView displayIfNeeded];
+                [CATransaction commit];
+                [CATransaction flush];
+            };
+            if ([NSThread isMainThread]) {
+                updates();
+            } else {
+                dispatch_sync(dispatch_get_main_queue(), updates);
+            }
+        };
+        void (^showLiveSurface)(void) = ^{
+            void (^updates)(void) = ^{
+                [CATransaction begin];
+                [CATransaction setDisableActions:YES];
+                // Keep the opaque cover above Metal until the prepared layer
+                // is visible, then remove it in the same AppKit transaction.
+                [window.contentView addSubview:idleOverlay
+                                     positioned:NSWindowAbove
+                                     relativeTo:nil];
+                tb_native_metal_set_visible(renderer, 1);
+                idleOverlay.accessibilityHidden = YES;
+                idleOverlay.hidden = YES;
+                [CATransaction commit];
+                [CATransaction flush];
+            };
+            if ([NSThread isMainThread]) {
+                updates();
+            } else {
+                dispatch_sync(dispatch_get_main_queue(), updates);
+            }
+        };
+        uint64_t (^beginCoveredPresentation)(void) = ^uint64_t {
+            __block uint64_t epoch = 0;
+            void (^updates)(void) = ^{
+                [CATransaction begin];
+                [CATransaction setDisableActions:YES];
+                epoch = tb_native_metal_begin_presentation_session(renderer);
+                // beginPresentationSession attaches Metal above existing views;
+                // restore the opaque waiting cover as the topmost surface.
+                [window.contentView addSubview:idleOverlay
+                                     positioned:NSWindowAbove
+                                     relativeTo:nil];
+                [CATransaction commit];
+                [CATransaction flush];
+            };
+            if ([NSThread isMainThread]) {
+                updates();
+            } else {
+                dispatch_sync(dispatch_get_main_queue(), updates);
+            }
+            return epoch;
+        };
         // The benchmark receives synchronously below. Give AppKit/Core
         // Animation one main-run-loop turn so the visible waiting window reaches
         // WindowServer before accept() blocks. The Metal subview is attached by
@@ -1055,10 +1252,16 @@ int main(int argc, const char *argv[]) {
                 continue;
             }
         }
+        showIdleState(@"MacBook detected · starting",
+                      @"Preparing the native 5K display stream.");
         if (tb_power_lifecycle_begin_session(&powerLifecycle) != 0) {
             tb_shutdown_gate_close_peer(shutdownGate, &peer);
             if (tb_shutdown_gate_is_requested(shutdownGate)) break;
-            if (serveForever) continue;
+            if (serveForever) {
+                showIdleState(@"Couldn’t wake the display · retrying",
+                              @"The receiver will try again automatically.");
+                continue;
+            }
             exitCode = 74;
             break;
         }
@@ -1067,7 +1270,29 @@ int main(int argc, const char *argv[]) {
             tb_shutdown_gate_close_peer(shutdownGate, &peer);
             tb_power_lifecycle_end_session(&powerLifecycle);
             if (tb_shutdown_gate_is_requested(shutdownGate)) break;
-            if (serveForever) continue;
+            if (serveForever) {
+                showIdleState(@"Couldn’t start the stream · retrying",
+                              @"Check that the sender is running on the MacBook.");
+                continue;
+            }
+            exitCode = 71;
+            break;
+        }
+        showIdleState(@"Connected · waiting for the first frame",
+                      @"The native 5K display stream is starting.");
+        const uint64_t sessionPresentationEpoch =
+            beginCoveredPresentation();
+        if (sessionPresentationEpoch == 0) {
+            fprintf(stderr,
+                    "TB_PROTOCOL_METAL result=failed reason=surface-prepare\n");
+            tb_shutdown_gate_close_peer(shutdownGate, &peer);
+            tb_power_lifecycle_end_session(&powerLifecycle);
+            if (tb_shutdown_gate_is_requested(shutdownGate)) break;
+            if (serveForever) {
+                showIdleState(@"Couldn’t prepare the display · retrying",
+                              @"The receiver will try again automatically.");
+                continue;
+            }
             exitCode = 71;
             break;
         }
@@ -1123,6 +1348,7 @@ int main(int argc, const char *argv[]) {
         bool processFatal = false;
         bool physicalGateChecked = false;
         bool liveGPUCompletionLogged = false;
+        bool liveSurfaceShown = false;
         bool peerReadTimedOut = false;
 
         while (attemptedFrames < expectedFrames &&
@@ -1130,6 +1356,16 @@ int main(int argc, const char *argv[]) {
             @autoreleasepool {
             struct tb_native_metal_stats liveStats;
             tb_native_metal_get_stats(renderer, &liveStats);
+            if (!liveSurfaceShown &&
+                liveStats.last_presented_epoch >= sessionPresentationEpoch) {
+                showLiveSurface();
+                liveSurfaceShown = true;
+                receiver_diagnostic(
+                    OS_LOG_TYPE_DEFAULT,
+                    "session=presented epoch=%llu presented=%llu",
+                    (unsigned long long)sessionPresentationEpoch,
+                    (unsigned long long)liveStats.presented_frames);
+            }
             if (liveStats.gpu_error_frames >
                 sessionBaseline.gpu_error_frames) {
                 rendererFailures++;
@@ -1343,6 +1579,16 @@ int main(int argc, const char *argv[]) {
             usleep(5000);
         } while (CACurrentMediaTime() < deadline);
         tb_native_metal_get_stats(renderer, &stats);
+        if (!liveSurfaceShown &&
+            stats.last_presented_epoch >= sessionPresentationEpoch) {
+            showLiveSurface();
+            liveSurfaceShown = true;
+            receiver_diagnostic(
+                OS_LOG_TYPE_DEFAULT,
+                "session=presented epoch=%llu presented=%llu",
+                (unsigned long long)sessionPresentationEpoch,
+                (unsigned long long)stats.presented_frames);
+        }
 
         const uint64_t submittedFrames =
             stats.submitted_frames - sessionBaseline.submitted_frames;
@@ -1514,16 +1760,16 @@ int main(int argc, const char *argv[]) {
             // The sender may disconnect because the cable was unplugged, the
             // MacBook slept, or the user stopped the display. Keep the iMac app
             // alive and return to its waiting surface for the next connection.
-            dispatch_sync(dispatch_get_main_queue(), ^{
-                tb_native_metal_set_visible(renderer, 0);
-                statusLabel.stringValue =
-                    @"TargetBridge 5K Receiver\nWaiting for the MacBook…";
-                [window makeKeyAndOrderFront:nil];
-                [window orderFrontRegardless];
-                [window displayIfNeeded];
-                [window.contentView displayIfNeeded];
-                [CATransaction flush];
-            });
+            if (sessionRejected) {
+                showIdleState(@"Stream rejected · waiting to retry",
+                              @"Check the sender, then reconnect the cable.");
+            } else if (peerReadTimedOut) {
+                showIdleState(@"Connection paused · waiting to reconnect",
+                              @"The display will resume automatically.");
+            } else {
+                showIdleState(@"Connection interrupted · waiting to reconnect",
+                              @"The display will resume automatically.");
+            }
         }
         }
         } while (serveForever &&

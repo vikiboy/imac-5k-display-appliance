@@ -1,5 +1,8 @@
 /* tb_dpcm_gpu.h — TBD2 encoder on the GPU.
  *
+ * Provenance: this derivative integrates and hardens the GPU codec work from
+ * Aykut Alpgiray Ates's TargetBridge PR #158. Exact links are in NOTICE.md.
+ *
  * WHY THIS IS NOT ON THE CPU
  *
  * The reference encoder in tb_dpcm.c costs ~95 ms/frame single-threaded at 5K.

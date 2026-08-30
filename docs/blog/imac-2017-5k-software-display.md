@@ -101,6 +101,12 @@ This branch also adds hardening that was not present in that form in the draft:
 - a dedicated 2017-iMac appliance Receiver with Bonjour advertisement,
   reconnect waiting, idle-system/display-session power assertions, and a
   fullscreen shielding window locked to the active built-in 5120 × 2880 panel;
+- a quiet native waiting surface with distinct detected, starting, interrupted,
+  and rejected states plus idle-only About/Quit controls; it has no animation,
+  polling timer, or idle Metal workload;
+- a presentation-epoch gate that keeps the waiting surface over a drawable
+  Metal layer until macOS confirms a frame from the current connection was
+  actually presented, preventing a stale desktop flash during reconnect;
 - a bridge-only receiver gate that rejects sessions unless the accepted
   socket's local address is the current link-local address on `bridge0`;
 - transport-specific Bonjour endpoint selection on the sender, so simultaneous
@@ -171,7 +177,7 @@ The current commands and sanitized component-result summaries live under
 
 | Gate | Current result | What it proves |
 |---|---:|---|
-| Sender unit suite | 125/125 | Protocol framing, automation parsing, profile and discovery behavior |
+| Sender unit suite | 133/133 | Protocol framing, automation parsing, profile and discovery behavior |
 | Receiver network parser | 73 checks | Bounded packet framing and malformed lengths |
 | TBD2 codec | 290 checks | Exact CPU round-trip and malformed-blob rejection at 8 and 10 bits |
 | DPCM GPU lifecycle | 43 checks | Pre-commit failure cleanup and bounded teardown quarantine |
@@ -179,7 +185,9 @@ The current commands and sanitized component-result summaries live under
 | Receiver profile | 13 checks | Panel/logical/backing profile selection |
 | Renderer policy | 22 checks | Deterministic native-Metal fallback policy |
 | Raw NV12 parser | 99 checks | Strict raw diagnostic parsing |
-| Native Metal fixture | 192 frames passed | Real GPU pipelines and stable 3/1/1 DPCM buffer/texture reuse |
+| Receiver shutdown fixture | Passed | Idle listener, active peer, descriptor reuse, and closed post-shutdown admission |
+| Receiver installer-order fixture | Passed | A disabled launchd override is cleared before bootstrap |
+| Native Metal fixture | 192 frames passed | Real GPU pipelines, stable 3/1/1 DPCM reuse, and presentation-epoch handoff |
 | Virtual display probe | **pending recorded rerun** | Must show 2560 × 1440 points → 5120 × 2880 pixels on the sender |
 | iMac end-to-end DPCM | **pending** | Required before any production claim |
 | Soak/reconnect/resources | **pending** | Required before any production claim |
@@ -195,7 +203,7 @@ TargetBridge iMac together. This is important: the iMac stream is backed by a
 real extended virtual display, so macOS—not a remote-control window—owns its
 arrangement and logical coordinate space.
 
-![macOS lists the TargetBridge iMac beside the Dell and built-in display](../images/imac2017/native-display-picker.png)
+![macOS lists the iMac display appliance beside the Dell and built-in display](../images/imac2017/native-display-picker.png)
 
 The final version of this post will include the following sanitized evidence:
 

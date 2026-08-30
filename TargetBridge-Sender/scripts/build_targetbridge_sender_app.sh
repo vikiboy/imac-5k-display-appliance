@@ -29,6 +29,9 @@ xcodebuild \
 mkdir -p "$DEST_DIR"
 rm -rf "$DEST_APP"
 ditto "$SOURCE_APP" "$DEST_APP"
+mkdir -p "$DEST_APP/Contents/Resources/Legal"
+cp "$REPO_ROOT/LICENSE" "$DEST_APP/Contents/Resources/Legal/LICENSE.txt"
+cp "$REPO_ROOT/NOTICE.md" "$DEST_APP/Contents/Resources/Legal/NOTICE.md"
 echo "Cleaning extended attributes..."
 xattr -cr "$DEST_APP" || true
 echo "Signing sender application..."
@@ -36,5 +39,5 @@ codesign --force --deep --sign - "$DEST_APP"
 codesign --verify --deep --strict --verbose=2 "$DEST_APP"
 touch "$DEST_APP"
 
-echo "TargetBridge sender built: $DEST_APP"
+echo "iMac 5K Display Sender built: $DEST_APP"
 echo "Local DerivedData: $DERIVED_DATA_DIR"

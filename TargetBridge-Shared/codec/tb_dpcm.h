@@ -1,5 +1,11 @@
 /* tb_dpcm.h — TBD2, a lossless tile-DPCM wire format for 4:4:4 frames.
  *
+ * PROVENANCE
+ *
+ * This implementation integrates and hardens the TBD1/TBD2 work developed by
+ * Aykut Alpgiray Ates in TargetBridge PR #158. See the repository NOTICE.md
+ * for the exact upstream pull request and commit links.
+ *
  * WHY THIS EXISTS
  *
  * The receiver spends 23.4 ms of a 36 ms frame just pulling bytes off the wire

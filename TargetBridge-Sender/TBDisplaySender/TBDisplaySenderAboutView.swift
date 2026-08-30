@@ -53,13 +53,13 @@ struct TBDisplaySenderAboutView: View {
                         .fixedSize(horizontal: false, vertical: true)
 
                     HStack(spacing: 12) {
-                        Link(destination: URL(string: "https://github.com/swellweb/targetBridge")!) {
+                        Link(destination: URL(string: "https://github.com/vikiboy/imac-5k-display-appliance")!) {
                             Label(githubTitle, systemImage: "link")
                         }
                         .buttonStyle(.borderedProminent)
 
-                        Link(destination: URL(string: "https://github.com/swellweb/targetBridge/releases/latest")!) {
-                            Label(releaseTitle, systemImage: "shippingbox")
+                        Link(destination: URL(string: "https://github.com/swellweb/targetBridge")!) {
+                            Label(upstreamTitle, systemImage: "arrow.up.right.square")
                         }
                         .buttonStyle(.bordered)
                     }
@@ -117,11 +117,11 @@ struct TBDisplaySenderAboutView: View {
 
     private var aboutSubtitle: String {
         switch service.language {
-        case .italian: return "Riporta l'idea di Target Display Mode nel mondo Apple Silicon con una pipeline diretta Mac-to-Mac."
-        case .english: return "Brings the Target Display Mode idea back to Apple Silicon with a direct Mac-to-Mac display pipeline."
-        case .german: return "Bringt die Idee von Target Display Mode mit einer direkten Mac-zu-Mac-Display-Pipeline zurück auf Apple Silicon."
-        case .french: return "Redonne vie à l’idée du Target Display Mode sur Apple Silicon grâce à une chaîne d’affichage directe de Mac à Mac."
-        case .chinese: return "通过直接的 Mac 到 Mac 显示管线，把 Target Display Mode 的理念带回 Apple Silicon 时代。"
+        case .italian: return "Un display Retina 5K personale per iMac 2017, costruito sul progetto open source TargetBridge."
+        case .english: return "A personal 2017-iMac Retina 5K display appliance built on the open-source TargetBridge foundation."
+        case .german: return "Eine persönliche Retina-5K-Display-Lösung für den iMac 2017 auf Basis des Open-Source-Projekts TargetBridge."
+        case .french: return "Un écran Retina 5K personnel pour iMac 2017, construit sur la base open source de TargetBridge."
+        case .chinese: return "基于开源 TargetBridge 构建的个人 2017 款 iMac Retina 5K 显示方案。"
         }
     }
 
@@ -137,11 +137,11 @@ struct TBDisplaySenderAboutView: View {
 
     private var projectDescription: String {
         switch service.language {
-        case .italian: return "TargetBridge cattura il desktop o il monitor virtuale sul Mac sender, codifica lo stream e lo presenta su un iMac receiver via Thunderbolt Bridge o Network Link sperimentale."
-        case .english: return "TargetBridge captures the sender desktop or virtual display, encodes the stream, and presents it on an iMac receiver over Thunderbolt Bridge or experimental Network Link."
-        case .german: return "TargetBridge erfasst den Sender-Desktop oder das virtuelle Display, kodiert den Stream und zeigt ihn auf einem iMac-Empfänger über Thunderbolt Bridge oder experimentellen Network Link an."
-        case .french: return "TargetBridge capture le bureau ou l’écran virtuel du sender, encode le flux et l’affiche sur un iMac receiver via Thunderbolt Bridge ou Network Link expérimental."
-        case .chinese: return "TargetBridge 会捕获发送端 Mac 的桌面或虚拟显示器，对流进行编码，并通过 Thunderbolt Bridge 或实验性的 Network Link 在 iMac 接收端上显示。"
+        case .italian: return "Questa variante indipendente cattura un vero display Retina esteso 2×, invia frame 4:4:4 lossless tramite Thunderbolt Bridge e li presenta sull’iMac con Metal."
+        case .english: return "This independent derivative captures a true 2× Retina extended display, sends lossless 4:4:4 frames over Thunderbolt Bridge, and presents them on the iMac with Metal."
+        case .german: return "Diese unabhängige Ableitung erfasst ein echtes erweitertes 2×-Retina-Display, sendet verlustfreie 4:4:4-Frames über Thunderbolt Bridge und zeigt sie per Metal auf dem iMac an."
+        case .french: return "Cette variante indépendante capture un véritable écran Retina étendu 2×, envoie des images 4:4:4 sans perte via Thunderbolt Bridge et les affiche sur l’iMac avec Metal."
+        case .chinese: return "这个独立衍生项目捕获真实的 2× Retina 扩展显示器，通过 Thunderbolt Bridge 传输无损 4:4:4 帧，并使用 Metal 在 iMac 上呈现。"
         }
     }
 
@@ -157,31 +157,31 @@ struct TBDisplaySenderAboutView: View {
 
     private var creditsBody: String {
         switch service.language {
-        case .italian: return "Creato da swellweb con il supporto della community open source TargetBridge. Contributi chiave da tester e collaboratori come ThomasWaldmann, DrDavidL, potar712 e altri membri della community."
-        case .english: return "Created by swellweb with support from the TargetBridge open-source community. Key contributions from testers and collaborators such as ThomasWaldmann, DrDavidL, potar712, and other community members."
-        case .german: return "Erstellt von swellweb mit Unterstützung der TargetBridge-Open-Source-Community. Wichtige Beiträge von Testern und Mitwirkenden wie ThomasWaldmann, DrDavidL, potar712 und weiteren Community-Mitgliedern."
-        case .french: return "Créé par swellweb avec le soutien de la communauté open source TargetBridge. Contributions essentielles de testeurs et collaborateurs comme ThomasWaldmann, DrDavidL, potar712 et d’autres membres de la communauté."
-        case .chinese: return "由 swellweb 在 TargetBridge 开源社区的支持下创建。ThomasWaldmann、DrDavidL、potar712 以及其他社区成员提供了重要测试和协作贡献。"
+        case .italian: return "Progetto personale di Vikram Mohanty, basato su TargetBridge di Marco Caciotti. Il codec TBD2 deriva dal lavoro di Aykut Alpgiray Ates (PR #158); il percorso Metal deriva dal lavoro di Betafer (PR #174). Licenza e crediti completi sono nel file NOTICE."
+        case .english: return "Personal project by Vikram Mohanty, built on TargetBridge by Marco Caciotti. TBD2 comes from Aykut Alpgiray Ates's PR #158; the native-Metal path comes from Betafer's PR #174. Full license and credits are in NOTICE."
+        case .german: return "Persönliches Projekt von Vikram Mohanty auf Basis von TargetBridge von Marco Caciotti. TBD2 stammt aus PR #158 von Aykut Alpgiray Ates; der native Metal-Pfad aus PR #174 von Betafer. Vollständige Lizenz- und Urheberhinweise stehen in NOTICE."
+        case .french: return "Projet personnel de Vikram Mohanty, basé sur TargetBridge de Marco Caciotti. TBD2 provient de la PR #158 d’Aykut Alpgiray Ates ; le chemin Metal natif de la PR #174 de Betafer. Licence et crédits complets figurent dans NOTICE."
+        case .chinese: return "Vikram Mohanty 的个人项目，基于 Marco Caciotti 的 TargetBridge。TBD2 来自 Aykut Alpgiray Ates 的 PR #158；原生 Metal 路径来自 Betafer 的 PR #174。完整许可和致谢见 NOTICE。"
         }
     }
 
     private var githubTitle: String {
         switch service.language {
-        case .italian: return "GitHub"
-        case .english: return "GitHub"
-        case .german: return "GitHub"
-        case .french: return "GitHub"
-        case .chinese: return "GitHub"
+        case .italian: return "Repository del progetto"
+        case .english: return "Project repository"
+        case .german: return "Projekt-Repository"
+        case .french: return "Dépôt du projet"
+        case .chinese: return "项目仓库"
         }
     }
 
-    private var releaseTitle: String {
+    private var upstreamTitle: String {
         switch service.language {
-        case .italian: return "Ultima release"
-        case .english: return "Latest release"
-        case .german: return "Letztes Release"
-        case .french: return "Dernière version"
-        case .chinese: return "最新发布"
+        case .italian: return "TargetBridge originale"
+        case .english: return "Upstream TargetBridge"
+        case .german: return "Ursprüngliches TargetBridge"
+        case .french: return "TargetBridge d’origine"
+        case .chinese: return "上游 TargetBridge"
         }
     }
 

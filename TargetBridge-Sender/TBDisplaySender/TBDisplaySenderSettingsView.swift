@@ -121,13 +121,13 @@ struct TBDisplaySenderSettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
 
                     HStack(spacing: 12) {
-                        Link(destination: URL(string: "https://github.com/swellweb/targetBridge")!) {
+                        Link(destination: URL(string: "https://github.com/vikiboy/imac-5k-display-appliance")!) {
                             Label(githubTitle, systemImage: "link")
                         }
                         .buttonStyle(.borderedProminent)
 
-                        Link(destination: URL(string: "https://github.com/swellweb/targetBridge/releases/latest")!) {
-                            Label(releaseTitle, systemImage: "shippingbox")
+                        Link(destination: URL(string: "https://github.com/swellweb/targetBridge")!) {
+                            Label(upstreamTitle, systemImage: "arrow.up.right.square")
                         }
                         .buttonStyle(.bordered)
                     }
@@ -272,11 +272,11 @@ struct TBDisplaySenderSettingsView: View {
 
     private var settingsTitle: String {
         switch service.language {
-        case .italian: return "Impostazioni TargetBridge"
-        case .english: return "TargetBridge Settings"
-        case .german: return "TargetBridge-Einstellungen"
-        case .french: return "Réglages TargetBridge"
-        case .chinese: return "TargetBridge 设置"
+        case .italian: return "Impostazioni iMac 5K Display"
+        case .english: return "iMac 5K Display Settings"
+        case .german: return "iMac 5K Display-Einstellungen"
+        case .french: return "Réglages iMac 5K Display"
+        case .chinese: return "iMac 5K Display 设置"
         }
     }
 
@@ -332,31 +332,31 @@ struct TBDisplaySenderSettingsView: View {
 
     private var aboutBody: String {
         switch service.language {
-        case .italian: return "TargetBridge e una utility open source per riutilizzare pannelli iMac Intel come display esterni per Mac moderni. Le preferenze generali vivono qui; le impostazioni operative di ogni sessione restano nella finestra principale."
-        case .english: return "TargetBridge is an open-source utility for reusing Intel iMac panels as external displays for modern Macs. Global preferences live here; per-session operational settings stay in the main window."
-        case .german: return "TargetBridge ist ein Open-Source-Werkzeug, um Intel-iMac-Panels als externe Displays für moderne Macs weiterzuverwenden. Globale Einstellungen sind hier; operative Sitzungsoptionen sind im Hauptfenster."
-        case .french: return "TargetBridge est un utilitaire open source qui permet de réutiliser les dalles d’iMac Intel comme écrans externes pour les Mac modernes. Les préférences globales se trouvent ici ; les réglages de chaque session restent dans la fenêtre principale."
-        case .chinese: return "TargetBridge 是一个开源工具，可将 Intel iMac 面板重新用作现代 Mac 的外接显示器。全局偏好设置在这里管理；每个会话的操作设置保留在主窗口中。"
+        case .italian: return "Questo è un progetto personale e indipendente per un iMac 5K del 2017, costruito sul progetto open source TargetBridge. Non è una release ufficiale TargetBridge e non promette supporto per altri hardware."
+        case .english: return "This is an independent personal project for one 2017 5K iMac, built on the open-source TargetBridge foundation. It is not an official TargetBridge release and makes no support promise for other hardware."
+        case .german: return "Dies ist ein unabhängiges persönliches Projekt für einen 5K-iMac von 2017 auf Basis des Open-Source-Projekts TargetBridge. Es ist keine offizielle TargetBridge-Version und verspricht keinen Support für andere Hardware."
+        case .french: return "Il s’agit d’un projet personnel indépendant pour un iMac 5K de 2017, construit sur la base open source de TargetBridge. Ce n’est pas une version officielle de TargetBridge et aucun support n’est promis pour d’autres matériels."
+        case .chinese: return "这是一个面向单台 2017 款 5K iMac 的独立个人项目，基于开源 TargetBridge。它不是 TargetBridge 官方版本，也不承诺支持其他硬件。"
         }
     }
 
     private var githubTitle: String {
         switch service.language {
-        case .italian: return "GitHub"
-        case .english: return "GitHub"
-        case .german: return "GitHub"
-        case .french: return "GitHub"
-        case .chinese: return "GitHub"
+        case .italian: return "Repository del progetto"
+        case .english: return "Project repository"
+        case .german: return "Projekt-Repository"
+        case .french: return "Dépôt du projet"
+        case .chinese: return "项目仓库"
         }
     }
 
-    private var releaseTitle: String {
+    private var upstreamTitle: String {
         switch service.language {
-        case .italian: return "Ultima release"
-        case .english: return "Latest release"
-        case .german: return "Letztes Release"
-        case .french: return "Dernière version"
-        case .chinese: return "最新发布"
+        case .italian: return "TargetBridge originale"
+        case .english: return "Upstream TargetBridge"
+        case .german: return "Ursprüngliches TargetBridge"
+        case .french: return "TargetBridge d’origine"
+        case .chinese: return "上游 TargetBridge"
         }
     }
 

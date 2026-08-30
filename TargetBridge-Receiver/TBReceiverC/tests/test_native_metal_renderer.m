@@ -23,6 +23,18 @@ static int wait_for_completions(void *renderer, uint64_t target) {
     return 0;
 }
 
+static int wait_for_presentation_epoch(void *renderer, uint64_t target) {
+    const CFTimeInterval deadline = CACurrentMediaTime() + 3.0;
+    struct tb_native_metal_stats stats;
+    do {
+        tb_native_metal_get_stats(renderer, &stats);
+        if (stats.last_presented_epoch >= target) return 1;
+        [[NSRunLoop currentRunLoop]
+            runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.005]];
+    } while (CACurrentMediaTime() < deadline);
+    return 0;
+}
+
 static int exercise_dpcm_upload_growth_policy(void) {
     const size_t limit = 1024 * 1024;
     const size_t first = tb_native_metal_dpcm_next_upload_capacity(
@@ -297,13 +309,20 @@ static int exercise_raw_staging(void *renderer) {
     [[NSRunLoop currentRunLoop]
         runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
 
+    /* Reproduce the appliance transition: idle hides Metal; session start
+     * attaches it drawable behind an external opaque cover; a presented-frame
+     * epoch, not mere GPU completion, authorizes removal of that cover. */
+    tb_native_metal_set_visible(renderer, 0);
+    const uint64_t presentationEpoch =
+        tb_native_metal_begin_presentation_session(renderer);
+
     const int width = 640;
     const int height = 360;
     const int yStride = width + 32;
     const int uvStride = width + 64;
     uint8_t *y = (uint8_t *)malloc((size_t)yStride * height);
     uint8_t *uv = (uint8_t *)malloc((size_t)uvStride * (height / 2));
-    int ok = y && uv;
+    int ok = y && uv && presentationEpoch > 0;
     if (ok) {
         memset(y, 0x55, (size_t)yStride * height);
         memset(uv, 0xaa, (size_t)uvStride * (height / 2));
@@ -320,14 +339,17 @@ static int exercise_raw_staging(void *renderer) {
         memset(y, 0xee, (size_t)yStride * height);
         memset(uv, 0x11, (size_t)uvStride * (height / 2));
         ok = firstResult == 1 &&
-             wait_for_completions(renderer, baseline.completed_frames + 1);
+             wait_for_completions(renderer, baseline.completed_frames + 1) &&
+             wait_for_presentation_epoch(renderer, presentationEpoch);
     }
 
     struct tb_native_metal_stats afterFirst;
     tb_native_metal_get_stats(renderer, &afterFirst);
     if (ok) {
         ok = afterFirst.raw_copy_samples == baseline.raw_copy_samples + 1 &&
-             afterFirst.submitted_frames == baseline.submitted_frames + 1;
+             afterFirst.submitted_frames == baseline.submitted_frames + 1 &&
+             afterFirst.presented_frames >= baseline.presented_frames + 1 &&
+             afterFirst.last_presented_epoch == presentationEpoch;
     }
 
     /* Recreate the pool at another resolution, then return to the original. */

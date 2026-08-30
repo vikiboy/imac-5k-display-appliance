@@ -71,7 +71,7 @@ final class TBDisplaySenderStatusItemController: NSObject {
         guard statusItem == nil else { return }
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "display.2", accessibilityDescription: "TargetBridge")
+        item.button?.image = NSImage(systemSymbolName: "display.2", accessibilityDescription: "iMac 5K Display")
         item.button?.imagePosition = .imageOnly
         item.button?.toolTip = TBDisplaySenderL10n.topBarToolTip(service.language)
 
@@ -102,7 +102,7 @@ final class TBDisplaySenderStatusItemController: NSObject {
         sliderTargets.removeAll()
         toggleRows.removeAll()
 
-        let titleItem = NSMenuItem(title: "TargetBridge", action: nil, keyEquivalent: "")
+        let titleItem = NSMenuItem(title: "iMac 5K Display", action: nil, keyEquivalent: "")
         titleItem.isEnabled = false
         menu.addItem(titleItem)
 

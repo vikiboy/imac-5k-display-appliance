@@ -5,15 +5,15 @@
     <!-- Merged with Xcode's auto-generated Info.plist (GENERATE_INFOPLIST_FILE).
          Holds the URL scheme + the string keys Xcode no longer injects once INFOPLIST_FILE is set. -->
     <key>CFBundleDisplayName</key>
-    <string>TargetBridge</string>
+    <string>iMac 5K Display Sender</string>
     <key>NSHumanReadableCopyright</key>
-    <string>TargetBridge - Free &amp; Open Source</string>
+    <string>Independent derivative of TargetBridge · MIT licensed</string>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>TargetBridge requires screen recording permission to capture the virtual display or mirror the desktop to the iMac.</string>
+    <string>iMac 5K Display needs Screen Recording to capture the virtual Retina display sent to your iMac.</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>TargetBridge connects directly to your iMac over the local network or Thunderbolt Bridge to send display pixels.</string>
+    <string>iMac 5K Display connects to your iMac over the trusted Thunderbolt Bridge link to send display pixels.</string>
     <key>NSAppleEventsUsageDescription</key>
-    <string>TargetBridge uses System Events to run shortcuts selected for Receiver is Master.</string>
+    <string>iMac 5K Display uses System Events only for shortcuts selected in Receiver is Master mode.</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

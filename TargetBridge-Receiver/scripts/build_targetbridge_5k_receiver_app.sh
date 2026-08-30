@@ -19,6 +19,9 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$SOURCE_BINARY" "$APP_DIR/Contents/MacOS/$EXECUTABLE_NAME"
 chmod 0755 "$APP_DIR/Contents/MacOS/$EXECUTABLE_NAME"
+mkdir -p "$APP_DIR/Contents/Resources/Legal"
+cp "$REPO_ROOT/LICENSE" "$APP_DIR/Contents/Resources/Legal/LICENSE.txt"
+cp "$REPO_ROOT/NOTICE.md" "$APP_DIR/Contents/Resources/Legal/NOTICE.md"
 
 mkdir -p "$ICON_WORK/TargetBridge5KReceiver.iconset"
 sips -z 16 16 "$ICON_SOURCE" --out "$ICON_WORK/TargetBridge5KReceiver.iconset/icon_16x16.png" >/dev/null
@@ -42,7 +45,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>TargetBridge 5K Receiver</string>
+    <string>iMac 5K Display Appliance</string>
     <key>CFBundleExecutable</key>
     <string>TargetBridge5KReceiver</string>
     <key>CFBundleIdentifier</key>
@@ -52,7 +55,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
     <key>CFBundleIconFile</key>
     <string>TargetBridge5KReceiver</string>
     <key>CFBundleName</key>
-    <string>TargetBridge 5K Receiver</string>
+    <string>iMac 5K Display Appliance</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -77,4 +80,4 @@ xattr -cr "$APP_DIR"
 codesign --force --deep --sign - "$APP_DIR"
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
-echo "TargetBridge 5K Receiver built: $APP_DIR"
+echo "iMac 5K Display Appliance built: $APP_DIR"

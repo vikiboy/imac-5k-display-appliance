@@ -7,4 +7,4 @@ if [[ -f "$PLIST_PATH" ]]; then
   rm "$PLIST_PATH"
 fi
 
-echo "TargetBridge 5K Receiver login item removed. The app itself was left installed."
+echo "iMac 5K Display Appliance login item removed. The app itself was left installed."
