@@ -100,6 +100,71 @@ static dispatch_source_t termination_signal_source(
 }
 @end
 
+/* Borderless NSWindow instances do not become key/main by default. The idle
+ * appliance has one native Options control, so make this specific panel
+ * eligible for normal AppKit activation when the user clicks it. */
+@interface TBApplianceWindow : NSWindow
+@end
+
+@implementation TBApplianceWindow
+- (BOOL)canBecomeKeyWindow { return YES; }
+- (BOOL)canBecomeMainWindow { return YES; }
+@end
+
+@interface TBReceiverPresentationController : NSObject <NSApplicationDelegate>
+- (instancetype)initWithWindow:(NSWindow *)window;
+- (void)invalidate;
+@end
+
+@implementation TBReceiverPresentationController {
+    NSWindow *_window;
+    id _screensDidWakeObserver;
+}
+
+- (instancetype)initWithWindow:(NSWindow *)window {
+    self = [super init];
+    if (!self) return nil;
+    _window = window;
+    __weak TBReceiverPresentationController *weakSelf = self;
+    _screensDidWakeObserver = [NSWorkspace.sharedWorkspace.notificationCenter
+        addObserverForName:NSWorkspaceScreensDidWakeNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(__unused NSNotification *notification) {
+        [weakSelf presentWithoutActivation];
+    }];
+    return self;
+}
+
+- (void)presentWithoutActivation {
+    [_window orderFrontRegardless];
+    [_window displayIfNeeded];
+    [_window.contentView displayIfNeeded];
+}
+
+- (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    (void)notification;
+    [self presentWithoutActivation];
+    /* Activation is asynchronous. Make the window key only from the matching
+     * delegate callback instead of racing AppKit during launch-agent startup. */
+    [NSApp activateIgnoringOtherApps:YES];
+}
+
+- (void)applicationDidBecomeActive:(NSNotification *)notification {
+    (void)notification;
+    [_window makeKeyWindow];
+}
+
+- (void)invalidate {
+    if (_screensDidWakeObserver) {
+        [NSWorkspace.sharedWorkspace.notificationCenter
+            removeObserver:_screensDidWakeObserver];
+        _screensDidWakeObserver = nil;
+    }
+}
+
+@end
+
 static void fail(const char *operation) {
     fprintf(stderr, "TB_PROTOCOL_METAL error=%s errno=%d message=%s\n",
             operation, errno, strerror(errno));
@@ -751,10 +816,9 @@ int main(int argc, const char *argv[]) {
                 "TB_PROTOCOL_METAL activationPolicy=%ld requestedPolicySet=%s\n",
                 (long)NSApp.activationPolicy,
                 activationPolicySet ? "true" : "false");
-        // This benchmark supplies its own main() instead of NSApplicationMain,
-        // so it must explicitly complete the AppKit launch lifecycle before it
-        // asks LaunchServices to activate and order a physical window.
-        [NSApp finishLaunching];
+        // This executable supplies its own main() instead of NSApplicationMain.
+        // Build the principal menu before entering NSApplication's event loop;
+        // -run completes the AppKit launch lifecycle exactly once.
 
         // The display surface is intentionally quiet, but this is still a Mac
         // application rather than a passive input. A minimal native app menu
@@ -870,7 +934,7 @@ int main(int argc, const char *argv[]) {
             tb_power_lifecycle_stop(&powerLifecycle);
             return 69;
         }
-        NSWindow *window = [[NSWindow alloc]
+        NSWindow *window = [[TBApplianceWindow alloc]
             initWithContentRect:screen.frame
                       styleMask:NSWindowStyleMaskBorderless
                         backing:NSBackingStoreBuffered
@@ -982,11 +1046,9 @@ int main(int argc, const char *argv[]) {
                 constraintLessThanOrEqualToAnchor:idleOverlay.trailingAnchor
                                           constant:-48.0]
         ]];
-        [NSApp activateIgnoringOtherApps:YES];
-        [window makeKeyAndOrderFront:nil];
-        [window orderFrontRegardless];
-        [[NSRunLoop currentRunLoop]
-            runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+        TBReceiverPresentationController *presentationController =
+            [[TBReceiverPresentationController alloc] initWithWindow:window];
+        NSApp.delegate = presentationController;
 
         if (selectedDisplayID == kCGNullDirectDisplay ||
             !physical_panel_accepts_dpcm(
@@ -1037,7 +1099,6 @@ int main(int argc, const char *argv[]) {
                                      positioned:NSWindowAbove
                                      relativeTo:nil];
                 tb_native_metal_set_visible(renderer, 0);
-                [window makeKeyAndOrderFront:nil];
                 [window orderFrontRegardless];
                 [window displayIfNeeded];
                 [window.contentView displayIfNeeded];
@@ -1911,6 +1972,8 @@ int main(int argc, const char *argv[]) {
         free(packetTimes);
         free(payload);
         tb_native_metal_destroy(renderer);
+        [presentationController invalidate];
+        NSApp.delegate = nil;
         [window close];
         if (requestedSignal != 0) {
             receiver_diagnostic(

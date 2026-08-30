@@ -65,7 +65,7 @@ tb_dpcm.o: $(CODEC)/tb_dpcm.c $(CODEC)/tb_dpcm.h
 	$(CC) $(CFLAGS) -I$(CODEC) -c -o $@ $<
 
 clean:
-	rm -f $(OBJ) tb_dpcm_native.o tb_dpcm_universal.o $(BIN) $(TEST_BIN) $(TEST_DPCM_BIN) $(TEST_DPCM_GPU_BIN) $(TEST_INPUT_QUEUE_BIN) $(TEST_RECEIVER_PROFILE_BIN) $(TEST_RENDERER_POLICY_BIN) $(TEST_RAW_NV12_BIN) $(TEST_PRE_SESSION_BIN) $(TEST_SHUTDOWN_GATE_BIN) $(TEST_NATIVE_METAL_BIN) $(BENCH_NATIVE_METAL_BIN) $(BENCH_NATIVE_METAL_UNIVERSAL_BIN) $(BENCH_NETWORK_METAL_UNIVERSAL_BIN) $(BENCH_PROTOCOL_METAL_UNIVERSAL_BIN) $(BENCH_TB_LINK_UNIVERSAL_BIN) $(BENCH_OPENGL_BIN)
+	rm -f $(OBJ) tb_dpcm_native.o tb_dpcm_universal.o $(BIN) $(TEST_BIN) $(TEST_DPCM_BIN) $(TEST_DPCM_GPU_BIN) $(TEST_INPUT_QUEUE_BIN) $(TEST_RECEIVER_PROFILE_BIN) $(TEST_RENDERER_POLICY_BIN) $(TEST_RAW_NV12_BIN) $(TEST_PRE_SESSION_BIN) $(TEST_SHUTDOWN_GATE_BIN) $(TEST_NATIVE_METAL_BIN) $(TEST_APPKIT_LAUNCH_BIN) $(BENCH_NATIVE_METAL_BIN) $(BENCH_NATIVE_METAL_UNIVERSAL_BIN) $(BENCH_NETWORK_METAL_UNIVERSAL_BIN) $(BENCH_PROTOCOL_METAL_UNIVERSAL_BIN) $(BENCH_TB_LINK_UNIVERSAL_BIN) $(BENCH_OPENGL_BIN)
 
 # Unit tests for the packet parser and wire codec. Both are pure C, so these
 # need no ffmpeg/SDL/pkgconf and run anywhere, including CI, without hardware.
@@ -84,6 +84,7 @@ TEST_RAW_NV12_BIN = test_raw_nv12
 TEST_PRE_SESSION_BIN = test_pre_session
 TEST_SHUTDOWN_GATE_BIN = test_shutdown_gate
 TEST_NATIVE_METAL_BIN = test_native_metal_renderer
+TEST_APPKIT_LAUNCH_BIN = test_appkit_launch_lifecycle
 BENCH_NATIVE_METAL_BIN = benchmark_native_metal_renderer
 BENCH_NATIVE_METAL_UNIVERSAL_BIN = benchmark_native_metal_renderer_universal
 BENCH_NETWORK_METAL_UNIVERSAL_BIN = benchmark_network_metal_receiver_universal
@@ -92,7 +93,7 @@ BENCH_TB_LINK_UNIVERSAL_BIN = benchmark_tb_link_universal
 BENCH_OPENGL_BIN = benchmark_sdl_opengl_renderer
 TEST_PLATFORM_BINS =
 ifeq ($(UNAME_S),Darwin)
-TEST_PLATFORM_BINS += $(TEST_DPCM_GPU_BIN) $(TEST_NATIVE_METAL_BIN)
+TEST_PLATFORM_BINS += $(TEST_DPCM_GPU_BIN) $(TEST_NATIVE_METAL_BIN) $(TEST_APPKIT_LAUNCH_BIN)
 endif
 
 tb_dpcm_native.o: $(CODEC)/tb_dpcm.c $(CODEC)/tb_dpcm.h
@@ -135,6 +136,10 @@ $(TEST_NATIVE_METAL_BIN): tests/test_native_metal_renderer.m src/tb_native_metal
 	$(CC) -O2 -g -Wall -Wextra -Isrc -I$(CODEC) -std=c++17 -x objective-c++ -fobjc-arc -DTB_NATIVE_METAL_TESTING \
 		tests/test_native_metal_renderer.m src/tb_native_metal_renderer.m -x none tb_dpcm_native.o \
 		-framework AppKit -framework CoreVideo -framework IOSurface -framework Metal -framework QuartzCore -lc++ -o $@
+
+$(TEST_APPKIT_LAUNCH_BIN): tests/test_appkit_launch_lifecycle.m
+	$(CC) -O2 -g -Wall -Wextra -Werror -fobjc-arc \
+		tests/test_appkit_launch_lifecycle.m -framework AppKit -o $@
 
 $(BENCH_NATIVE_METAL_BIN): benchmarks/benchmark_native_metal_renderer.m src/tb_native_metal_renderer.m src/tb_native_metal_renderer.h src/renderer_policy.c src/renderer_policy.h tb_dpcm_native.o
 	$(CC) -O2 -g -Wall -Wextra -Isrc -I$(CODEC) -std=c++17 -x objective-c++ -fobjc-arc \
@@ -191,9 +196,11 @@ test: $(TEST_BIN) $(TEST_DPCM_BIN) $(TEST_INPUT_QUEUE_BIN) $(TEST_RECEIVER_PROFI
 	./$(TEST_PRE_SESSION_BIN)
 	./$(TEST_SHUTDOWN_GATE_BIN)
 	/bin/zsh tests/test_receiver_installer_order.zsh ../scripts/install_targetbridge_5k_receiver_launch_agent.sh
+	/bin/zsh tests/test_appkit_launch_contract.zsh benchmarks/benchmark_targetbridge_raw_receiver.m
 ifeq ($(UNAME_S),Darwin)
 	./$(TEST_DPCM_GPU_BIN)
 	./$(TEST_NATIVE_METAL_BIN)
+	./$(TEST_APPKIT_LAUNCH_BIN)
 endif
 
 .PHONY: all clean test benchmark-metal benchmark-metal-universal benchmark-network-metal-universal benchmark-opengl
