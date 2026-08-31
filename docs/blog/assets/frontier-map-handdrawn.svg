@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1120" role="img" aria-labelledby="title desc">
+  <title id="title">What existed, what was missing, how analogy guided the fix, what changed, and what remains</title>
+  <desc id="desc">A six-stage hand-drawn flowchart. It distinguishes TargetBridge prior art from the unresolved 2017 iMac path, the analogies used to reframe the problem, the implementation transferred from those analogies, the measured result, and the remaining limits.</desc>
+  <defs>
+    <pattern id="paper" width="22" height="22" patternUnits="userSpaceOnUse">
+      <path d="M0 21.5H22" stroke="#d9d0c0" stroke-width="0.6" opacity="0.28"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#285b57"/>
+    </marker>
+    <style>
+      .t { font-family: -apple-system, BlinkMacSystemFont, "Avenir Next", "Segoe UI", sans-serif; fill:#26332f; }
+      .title { font-size:39px; font-weight:720; }
+      .subtitle { font-size:19px; font-weight:470; }
+      .step { font-size:14px; font-weight:760; letter-spacing:1.8px; }
+      .head { font-size:25px; font-weight:700; }
+      .body { font-size:17px; font-weight:480; }
+      .note { font-size:15px; font-weight:600; }
+      .card { stroke:#26332f; stroke-width:2.2; }
+      .arrow { fill:none; stroke:#285b57; stroke-width:4; stroke-linecap:round; stroke-linejoin:round; marker-end:url(#arrow); }
+      .dash { fill:none; stroke:#b75d42; stroke-width:2.4; stroke-linecap:round; stroke-dasharray:7 9; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1120" rx="22" fill="#fbf7ef"/>
+  <rect width="1600" height="1120" rx="22" fill="url(#paper)"/>
+
+  <text x="70" y="68" class="t title">How analogy moved the 2017 iMac path from possible to usable</text>
+  <text x="70" y="105" class="t subtitle">Prior work supplied mechanisms. Analogies exposed the right constraints. Measurement decided whether the transfer worked.</text>
+
+  <!-- 1: prior art -->
+  <g transform="translate(60 160)">
+    <path class="card" fill="#f0eee8" d="M8 7 Q2 11 5 24 L5 322 Q7 333 21 334 L460 332 Q470 329 468 316 L470 20 Q468 7 454 8 Z"/>
+    <text x="30" y="42" class="t step" fill="#59635f">1 · ALREADY DONE</text>
+    <text x="30" y="79" class="t head">TargetBridge foundation</text>
+    <text x="30" y="118" class="t body">• virtual mirrored + extended displays</text>
+    <text x="30" y="149" class="t body">• Bonjour + Thunderbolt Bridge transport</text>
+    <text x="30" y="180" class="t body">• H.264 / HEVC profiles through 5K</text>
+    <text x="30" y="211" class="t body">• experimental lossless TBD2 / DPCM</text>
+    <text x="30" y="242" class="t body">• native Metal receiver work</text>
+    <path class="dash" d="M28 272 C146 264 294 280 439 270"/>
+    <text x="30" y="304" class="t note" fill="#7a4638">We did not invent these mechanisms.</text>
+  </g>
+
+  <path class="arrow" d="M542 326 C559 314 570 314 590 326"/>
+
+  <!-- 2: gap -->
+  <g transform="translate(575 160)">
+    <path class="card" fill="#fae8df" d="M8 7 Q2 11 5 24 L5 322 Q7 333 21 334 L460 332 Q470 329 468 316 L470 20 Q468 7 454 8 Z"/>
+    <text x="30" y="42" class="t step" fill="#a54e38">2 · STILL OPEN ON OUR PATH</text>
+    <text x="30" y="79" class="t head">The 2017-specific challenge</text>
+    <text x="30" y="118" class="t body">• no physical display-input mode</text>
+    <text x="30" y="149" class="t body">• video coding softened desktop text</text>
+    <text x="30" y="180" class="t body">• full-frame receive + present serialized</text>
+    <text x="30" y="211" class="t body">• combined older-Radeon path unqualified</text>
+    <text x="30" y="242" class="t body">• prompts, cursor, sleep + reconnect edges</text>
+    <path class="dash" d="M28 272 C146 264 294 280 439 270"/>
+    <text x="30" y="304" class="t note" fill="#7a4638">Possible was not yet monitor-like.</text>
+  </g>
+
+  <path class="arrow" d="M1057 326 C1074 314 1085 314 1105 326"/>
+
+  <!-- 3: analogy -->
+  <g transform="translate(1090 160)">
+    <path class="card" fill="#e5eff9" d="M8 7 Q2 11 5 24 L5 322 Q7 333 21 334 L460 332 Q470 329 468 316 L470 20 Q468 7 454 8 Z"/>
+    <text x="30" y="42" class="t step" fill="#315f8a">3 · ANALOGICAL SEARCH</text>
+    <text x="30" y="79" class="t head">Borrow patterns, not claims</text>
+    <text x="30" y="118" class="t body">Thin client → keep the iMac active</text>
+    <text x="30" y="153" class="t body">Real-time media → overlap; don't queue</text>
+    <text x="30" y="188" class="t body">Network planes → pause pixels, keep control</text>
+    <text x="30" y="223" class="t body">Framebuffer → preserve UI pixels exactly</text>
+    <path class="dash" d="M28 255 C146 247 294 263 439 253"/>
+    <text x="30" y="287" class="t note" fill="#315f8a">Analogy suggested constraints—</text>
+    <text x="30" y="312" class="t note" fill="#315f8a">profiling still had to prove them.</text>
+  </g>
+
+  <path class="arrow" d="M1325 508 C1342 538 1342 554 1325 584"/>
+
+  <!-- 4: transferred implementation -->
+  <g transform="translate(1090 610)">
+    <path class="card" fill="#e5f1eb" d="M8 7 Q2 11 5 24 L5 322 Q7 333 21 334 L460 332 Q470 329 468 316 L470 20 Q468 7 454 8 Z"/>
+    <text x="30" y="42" class="t step" fill="#285b57">4 · TRANSFERRED INTO CODE</text>
+    <text x="30" y="79" class="t head">What we needed to fix</text>
+    <text x="30" y="118" class="t body">• lossless DPCM + Metal on Radeon Pro 575</text>
+    <text x="30" y="149" class="t body">• two fixed 64 MiB receive slots</text>
+    <text x="30" y="180" class="t body">• physical presentedTime + fail-closed counts</text>
+    <text x="30" y="211" class="t body">• fresh epochs across sleep / disconnect</text>
+    <text x="30" y="242" class="t body">• stable local signing + one-cursor ownership</text>
+    <path class="dash" d="M28 272 C146 264 294 280 439 270"/>
+    <text x="30" y="304" class="t note" fill="#285b57">One frame of overlap; no stockpile.</text>
+  </g>
+
+  <path class="arrow" d="M1078 776 C1060 764 1048 764 1028 776"/>
+
+  <!-- 5: result -->
+  <g transform="translate(575 610)">
+    <path class="card" fill="#dff0e5" d="M8 7 Q2 11 5 24 L5 322 Q7 333 21 334 L460 332 Q470 329 468 316 L470 20 Q468 7 454 8 Z"/>
+    <text x="30" y="42" class="t step" fill="#26704f">5 · NEW AND MEASURED HERE</text>
+    <text x="30" y="79" class="t head">Where the frontier moved</text>
+    <text x="30" y="118" class="t body">• 5120 × 2880, lossless captured 8-bit RGB</text>
+    <text x="30" y="149" class="t body">• 58.376 FPS / 55 drops →</text>
+    <text x="52" y="180" class="t body" font-weight="720">59.972 FPS / 1 drop</text>
+    <text x="30" y="211" class="t body">• native arrangement, one cursor, auto replug</text>
+    <text x="30" y="242" class="t body">• bounded short resource sample</text>
+    <path class="dash" d="M28 272 C146 264 294 280 439 270"/>
+    <text x="30" y="304" class="t note" fill="#26704f">Exact-hardware proof, not a universal first.</text>
+  </g>
+
+  <path class="arrow" d="M563 776 C545 764 533 764 513 776"/>
+
+  <!-- 6: remaining -->
+  <g transform="translate(60 610)">
+    <path class="card" fill="#f5edcf" d="M8 7 Q2 11 5 24 L5 322 Q7 333 21 334 L460 332 Q470 329 468 316 L470 20 Q468 7 454 8 Z"/>
+    <text x="30" y="42" class="t step" fill="#876b1f">6 · WHAT STILL REMAINS</text>
+    <text x="30" y="79" class="t head">The boundary of the result</text>
+    <text x="30" y="118" class="t body">• active iMac required; no pre-login input</text>
+    <text x="30" y="149" class="t body">• qualified path is 8-bit SDR, not HDR</text>
+    <text x="30" y="180" class="t body">• one exact iMac + MacBook configuration</text>
+    <text x="30" y="211" class="t body">• one-hour current-build soak still open</text>
+    <text x="30" y="242" class="t body">• no public support or notarized distribution</text>
+    <path class="dash" d="M28 272 C146 264 294 280 439 270"/>
+    <text x="30" y="304" class="t note" fill="#876b1f">Changed tiles / AI stay research-only.</text>
+  </g>
+
+  <path d="M1040 1005 C883 1040 703 1042 545 1006" fill="none" stroke="#315f8a" stroke-width="2.6" stroke-linecap="round"/>
+  <text x="800" y="1060" text-anchor="middle" class="t note" fill="#315f8a">Analogical technical innovation = transfer a proven pattern → preserve its constraints → test it in the new system.</text>
+</svg>

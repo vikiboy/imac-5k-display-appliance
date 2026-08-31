@@ -127,6 +127,35 @@ stopped asking, “How do we force a 2017 iMac to accept a display signal?” an
 asked, “What other systems preserve an output device while relocating the work
 that feeds it?”
 
+![A six-stage map from prior work to remaining limits](assets/frontier-map-handdrawn.svg)
+
+*The complete contribution boundary. Analogical reasoning sits between the
+unresolved problem and the implementation: it generates transferable
+constraints, not automatic proof or retroactive ownership of prior work.*
+
+### Why this is analogical technical innovation
+
+Here, analogy was not a metaphor added after the engineering was complete. It
+was a repeatable search method:
+
+1. **Abstract the blockage.** “The cable is not fast enough” became “independent
+   real-time stages are being run serially.”
+2. **Search by structure.** Audio engines, video renderers, and network routers
+   all face the same combination of throughput, freshness, and bounded-memory
+   constraints.
+3. **Transfer the invariant, not the surface feature.** The useful rule was not
+   “copy a video player”; it was “overlap adjacent stages, cap work in flight,
+   and discard stale epochs.”
+4. **Make the analogy falsifiable.** Physical presentation timestamps, drop
+   counts, integrity checks, RAM, storage, and lifecycle tests had to improve.
+
+Software is unusually suitable for this kind of innovation because a scheduling
+invariant can move between domains even when their code, data, and products look
+unrelated. The creative act is the transfer and recombination; the engineering
+discipline is preserving the original constraint and measuring the result. In
+this project, analogy did not replace source research or profiling. It told us
+where to look and what a safe solution should resemble.
+
 ![Three analogies transferred into the display system](assets/analogy-transfer-handdrawn.svg)
 
 ### Analogy 1: a thin client, not a monitor cable
