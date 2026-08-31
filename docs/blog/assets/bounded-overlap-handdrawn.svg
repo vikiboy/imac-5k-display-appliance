@@ -17,7 +17,7 @@
   </defs>
   <rect width="1280" height="720" rx="18" fill="#fbf7ef"/>
   <rect width="1280" height="720" rx="18" fill="url(#paper)"/>
-  <text x="58" y="67" class="t h">The useful analogy: a two-station assembly line</text>
+  <text x="58" y="67" class="t h">A useful lens after profiling: a two-station assembly line</text>
   <text x="58" y="102" class="t sub">Do not make the network wait while the GPU presents. Keep exactly one next frame ready.</text>
 
   <text x="58" y="170" class="t lane">Before · serial</text>
@@ -59,5 +59,5 @@
 
   <rect x="58" y="627" width="1164" height="58" rx="8" fill="#fffdf8" stroke="#c46f4b" stroke-width="2"/>
   <text x="640" y="652" text-anchor="middle" class="t stage">Bounded means predictable: two reusable 64 MiB receive slots, no growing queue, no frame cache on disk.</text>
-  <text x="640" y="675" text-anchor="middle" class="t note">The analogy suggested the structure; hardware presentation timestamps decided whether it worked.</text>
+  <text x="640" y="675" text-anchor="middle" class="t note">Source history and profiling found the gap; the analogy framed the transfer; presentation timestamps tested it.</text>
 </svg>

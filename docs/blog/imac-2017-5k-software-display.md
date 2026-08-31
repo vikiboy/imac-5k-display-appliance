@@ -1,6 +1,6 @@
 # The panel was fine. The missing input was the problem.
 
-## How we turned a 2017 5K iMac into a software monitor—and what analogical thinking actually contributed
+## How we adapted TargetBridge for a 2017 5K iMac—and what analogical thinking actually contributed
 
 ![A hand-drawn MacBook-to-iMac software display pipeline](assets/software-display-hero-handdrawn.png)
 
@@ -101,10 +101,10 @@ This is an **integration, reduction, hardening, and exact-hardware validation
 contribution**. It is not a clean-room invention and not a claim that nobody had
 considered bounded pipelines before.
 
-### Where the frontier actually moved
+### What this derivative actually added
 
-The frontier moved in three specific, testable ways—not in the invention of a
-new display category or codec:
+If “pushing the frontier” is used here, it means three specific, testable
+extensions—not the invention of a new display category or codec:
 
 - **Hardware boundary:** the lossless DPCM and native Metal ideas were made to
   work together on the older 2017 `iMac18,3` and Radeon Pro 575, rather than only
@@ -120,43 +120,54 @@ new display category or codec:
 That is a meaningful push for this exact configuration. It is deliberately not
 worded as a universal first.
 
-## What analogies changed
+## Where analogies helped—and where they did not
 
-Analogical reasoning was useful because it changed the shape of the search. We
-stopped asking, “How do we force a 2017 iMac to accept a display signal?” and
-asked, “What other systems preserve an output device while relocating the work
-that feeds it?”
+Direct search for iMac display software found TargetBridge. Reading its source
+and pull-request history then exposed the lossless, bounded-assembly, and native
+Metal mechanisms. Analogical reasoning came after that foundation: it helped us
+recognize which mechanisms matched the remaining 2017-specific problems and how
+to combine them safely. It did not originate TargetBridge's architecture or its
+experimental lossless work.
+
+The analogical questions were still useful. We stopped asking only, “How do we
+force a 2017 iMac to accept a display signal?” and also asked, “What other
+systems preserve an output device while relocating the work that feeds it?”
 
 ![A six-stage map from prior work to remaining limits](assets/frontier-map-handdrawn.svg)
 
-*The complete contribution boundary. Analogical reasoning sits between the
-unresolved problem and the implementation: it generates transferable
-constraints, not automatic proof or retroactive ownership of prior work.*
+*The complete contribution boundary. Direct search and source archaeology come
+first. Analogical reasoning then helps connect an unresolved problem to
+transferable constraints; it does not provide automatic proof or retroactive
+ownership of prior work.*
 
-### Why this is analogical technical innovation
+### How analogical reasoning helped in a software context
 
-Here, analogy was not a metaphor added after the engineering was complete. It
-was a repeatable search method:
+Here, analogy was not a replacement for reading the code. It was a repeatable
+secondary search and synthesis method:
 
-1. **Abstract the blockage.** “The cable is not fast enough” became “independent
-   real-time stages are being run serially.”
-2. **Search by structure.** Audio engines, video renderers, and network routers
+1. **Inspect the direct prior art.** TargetBridge and its pull requests
+   established what already existed and prevented us from claiming it as new.
+2. **Abstract the remaining blockage.** Profiling changed “the cable may not be
+   fast enough” into “independent real-time stages are still being run
+   serially.”
+3. **Search by structure.** Audio engines, video renderers, and network routers
    all face the same combination of throughput, freshness, and bounded-memory
    constraints.
-3. **Transfer the invariant, not the surface feature.** The useful rule was not
+4. **Transfer the invariant, not the surface feature.** The useful rule was not
    “copy a video player”; it was “overlap adjacent stages, cap work in flight,
    and discard stale epochs.”
-4. **Make the analogy falsifiable.** Physical presentation timestamps, drop
+5. **Make the analogy falsifiable.** Physical presentation timestamps, drop
    counts, integrity checks, RAM, storage, and lifecycle tests had to improve.
 
 Software is unusually suitable for this kind of innovation because a scheduling
 invariant can move between domains even when their code, data, and products look
 unrelated. The creative act is the transfer and recombination; the engineering
 discipline is preserving the original constraint and measuring the result. In
-this project, analogy did not replace source research or profiling. It told us
-where to look and what a safe solution should resemble.
+this project, analogy did not replace source research or profiling. It helped
+us recognize structural matches in mechanisms that prior contributors had
+already developed, then supplied constraints for adapting them to our path.
 
-![Three analogies transferred into the display system](assets/analogy-transfer-handdrawn.svg)
+![Three analogies used to organize the remaining display work](assets/analogy-transfer-handdrawn.svg)
 
 ### Analogy 1: a thin client, not a monitor cable
 
@@ -165,10 +176,12 @@ application's visual result across a network. That maps cleanly to the hardware
 we actually own: macOS and the Radeon GPU continue running on the iMac while the
 MacBook owns the desktop.
 
-This analogy prevented a dead end. No userspace driver can make the 2017 iMac's
-Thunderbolt controller expose a physical DisplayPort input that the hardware
-does not provide. But software can make the two Macs cooperate as one display
-appliance.
+TargetBridge had already embodied this thin-client-like architecture before our
+work. The analogy helped us understand why that architecture was the correct
+hardware boundary; it did not create it. No userspace driver can make the 2017
+iMac's Thunderbolt controller expose a physical DisplayPort input that the
+hardware does not provide. The existing software approach instead lets the two
+Macs cooperate as one display appliance.
 
 ### Analogy 2: a bounded real-time assembly line
 
@@ -188,10 +201,11 @@ handoff. While Metal presents frame A, the network fills frame B; then they swap
 receiver frame pool at 128 MiB and stale epochs are discarded.*
 
 Upstream PR #158 had already encountered the general bounded-assembly issue in
-its sliced transport. The new step was recognizing the same pattern inside the
-maintained full-frame path and transferring only the minimum mechanism needed
-for the 2017 machine. The result was not “more buffering”; it was **one frame of
-bounded overlap**.
+its sliced transport. Source archaeology and profiling supplied that evidence;
+the assembly-line analogy helped us recognize the same structure inside the
+maintained full-frame path. Our step was transferring only the minimum mechanism
+needed for the 2017 machine. The result was not “more buffering”; it was **one
+frame of bounded overlap**.
 
 ### Analogy 3: separate the control plane from the data plane
 
@@ -209,9 +223,11 @@ new manual session.
 ### Analogy 4: a framebuffer codec, not a movie codec
 
 A desktop is not a camera. Text edges, one-pixel lines, and UI colors matter
-more than cinematic compression efficiency. The active mode therefore uses
-lossless 8-bit BGRA represented with tiled DPCM/TBD2. It does **not** use HEVC,
-NV12 chroma subsampling, AI upscaling, or downsampling for the tested result.
+more than cinematic compression efficiency. Upstream lossless work already
+embodied that insight. We selected and hardened that direction for the active
+mode: lossless 8-bit BGRA represented with tiled DPCM/TBD2. It does **not** use
+HEVC, NV12 chroma subsampling, AI upscaling, or downsampling for the tested
+result.
 
 Changed-tile protocols are a related remote-framebuffer analogy and remain a
 promising optimization for mostly static desktops. We researched that direction
@@ -221,26 +237,28 @@ path already met the owner's experience goal. It is documented as
 [future research](../research/changed-region-protocol.md), not described as a
 finished feature.
 
-## Were the analogies load-bearing?
+## How necessary were the analogies?
 
-**Practically, yes; logically, no.** A sufficiently patient engineer could have
-found the serialized receiver stage through profiling alone. The upstream code
-and pull requests already contained most of the mechanisms. It would therefore
-be dishonest to say analogy made an otherwise impossible invention.
+**They were not load-bearing for the core solution.** Direct search found
+TargetBridge, and source archaeology found the relevant experimental pull
+requests. A careful engineer could have found the serialized receiver stage and
+reached the same two-slot design through profiling and ordinary systems work. It
+would be dishonest to say analogy made an otherwise impossible invention.
 
-But without analogy, the likely next moves were a faster cable, more video
-compression, a larger queue, speculative changed-tile work, or an AI model. None
-directly addressed the measured serialization. The assembly-line analogy made
-the two-slot handoff obvious; the control-plane analogy supplied the lifecycle
-shape; the thin-client analogy clarified what the product physically is.
+The analogies were nevertheless a useful accelerator and organizing lens. They
+focused attention away from a faster cable, heavier video compression, a larger
+queue, speculative changed-tile work, or an AI model. The assembly-line analogy
+made the bounded handoff easier to recognize; the control-plane analogy helped
+organize lifecycle hardening; the thin-client analogy clarified what the product
+physically is. The same conclusions remained subject to code evidence and tests.
 
 The fairest summary is:
 
-> **Prior art supplied the core mechanisms. Analogy shortened the search and
-> supplied the safety constraints. Profiling and physical presentation
-> timestamps supplied the proof.**
+> **Direct search found the foundation. Source archaeology found the
+> mechanisms. Analogy helped recognize and recombine their relevance. Profiling
+> and physical presentation timestamps supplied the proof.**
 
-## Transferring the analogy was the hard part
+## Transferring and hardening the selected mechanisms
 
 “Double-buffer it” fits in a sentence. Making that sentence safe in a real
 display stack did not.

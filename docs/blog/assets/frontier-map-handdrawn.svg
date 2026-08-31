@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1120" role="img" aria-labelledby="title desc">
-  <title id="title">What existed, what was missing, how analogy guided the fix, what changed, and what remains</title>
-  <desc id="desc">A six-stage hand-drawn flowchart. It distinguishes TargetBridge prior art from the unresolved 2017 iMac path, the analogies used to reframe the problem, the implementation transferred from those analogies, the measured result, and the remaining limits.</desc>
+  <title id="title">What existed, what was missing, where analogy helped, what changed, and what remains</title>
+  <desc id="desc">A six-stage hand-drawn flowchart. Direct search finds the TargetBridge foundation, source inspection establishes the unresolved 2017 iMac path, analogies help organize the remaining search, mechanisms are transferred and hardened, measurements establish the result, and explicit limits remain.</desc>
   <defs>
     <pattern id="paper" width="22" height="22" patternUnits="userSpaceOnUse">
       <path d="M0 21.5H22" stroke="#d9d0c0" stroke-width="0.6" opacity="0.28"/>
@@ -25,8 +25,8 @@
   <rect width="1600" height="1120" rx="22" fill="#fbf7ef"/>
   <rect width="1600" height="1120" rx="22" fill="url(#paper)"/>
 
-  <text x="70" y="68" class="t title">How analogy moved the 2017 iMac path from possible to usable</text>
-  <text x="70" y="105" class="t subtitle">Prior work supplied mechanisms. Analogies exposed the right constraints. Measurement decided whether the transfer worked.</text>
+  <text x="70" y="68" class="t title">Where analogy helped after TargetBridge made the display possible</text>
+  <text x="70" y="105" class="t subtitle">Direct search found the foundation. Source inspection found mechanisms. Analogy organized transfer. Measurement supplied proof.</text>
 
   <!-- 1: prior art -->
   <g transform="translate(60 160)">
@@ -63,15 +63,15 @@
   <!-- 3: analogy -->
   <g transform="translate(1090 160)">
     <path class="card" fill="#e5eff9" d="M8 7 Q2 11 5 24 L5 322 Q7 333 21 334 L460 332 Q470 329 468 316 L470 20 Q468 7 454 8 Z"/>
-    <text x="30" y="42" class="t step" fill="#315f8a">3 · ANALOGICAL SEARCH</text>
-    <text x="30" y="79" class="t head">Borrow patterns, not claims</text>
+    <text x="30" y="42" class="t step" fill="#315f8a">3 · ANALOGY GUIDED THE REMAINING SEARCH</text>
+    <text x="30" y="79" class="t head" font-size="23px">Recognize patterns, not ownership</text>
     <text x="30" y="118" class="t body">Thin client → keep the iMac active</text>
     <text x="30" y="153" class="t body">Real-time media → overlap; don't queue</text>
     <text x="30" y="188" class="t body">Network planes → pause pixels, keep control</text>
     <text x="30" y="223" class="t body">Framebuffer → preserve UI pixels exactly</text>
     <path class="dash" d="M28 255 C146 247 294 263 439 253"/>
-    <text x="30" y="287" class="t note" fill="#315f8a">Analogy suggested constraints—</text>
-    <text x="30" y="312" class="t note" fill="#315f8a">profiling still had to prove them.</text>
+    <text x="30" y="287" class="t note" fill="#315f8a">Prior work came first; analogy helped</text>
+    <text x="30" y="312" class="t note" fill="#315f8a">connect it to the remaining gaps.</text>
   </g>
 
   <path class="arrow" d="M1325 508 C1342 538 1342 554 1325 584"/>
@@ -96,7 +96,7 @@
   <g transform="translate(575 610)">
     <path class="card" fill="#dff0e5" d="M8 7 Q2 11 5 24 L5 322 Q7 333 21 334 L460 332 Q470 329 468 316 L470 20 Q468 7 454 8 Z"/>
     <text x="30" y="42" class="t step" fill="#26704f">5 · NEW AND MEASURED HERE</text>
-    <text x="30" y="79" class="t head">Where the frontier moved</text>
+    <text x="30" y="79" class="t head">What this derivative proved</text>
     <text x="30" y="118" class="t body">• 5120 × 2880, lossless captured 8-bit RGB</text>
     <text x="30" y="149" class="t body">• 58.376 FPS / 55 drops →</text>
     <text x="52" y="180" class="t body" font-weight="720">59.972 FPS / 1 drop</text>
@@ -123,5 +123,5 @@
   </g>
 
   <path d="M1040 1005 C883 1040 703 1042 545 1006" fill="none" stroke="#315f8a" stroke-width="2.6" stroke-linecap="round"/>
-  <text x="800" y="1060" text-anchor="middle" class="t note" fill="#315f8a">Analogical technical innovation = transfer a proven pattern → preserve its constraints → test it in the new system.</text>
+  <text x="800" y="1060" text-anchor="middle" class="t note" fill="#315f8a">Analogical reasoning here = recognize a structural match → transfer constraints → test; it does not create ownership of prior work.</text>
 </svg>

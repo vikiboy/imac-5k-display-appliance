@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
-  <title id="title">How three analogies transferred into engineering constraints</title>
+  <title id="title">How three analogies helped organize engineering constraints after prior work was inspected</title>
   <desc id="desc">A flowchart maps thin clients, real-time media pipelines and network control planes to the constraints and implementation choices in the 5K iMac display appliance.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#285b57"/></marker>
@@ -17,12 +17,12 @@
   </defs>
   <rect width="1280" height="760" rx="18" fill="#fbf7ef"/>
   <rect width="1280" height="760" rx="18" fill="url(#paper)"/>
-  <text x="58" y="68" class="t h">Analogies did not prove the answer. They narrowed the search.</text>
-  <text x="58" y="103" class="t body">Each borrowed pattern became a constraint that could be tested on the actual hardware.</text>
+  <text x="58" y="68" class="t h">Prior work came first. Analogies helped organize the remaining search.</text>
+  <text x="58" y="103" class="t body">Each recognized pattern became a constraint that still had to be tested on the actual hardware.</text>
 
   <text x="70" y="158" class="t head">FAMILIAR SYSTEM</text>
   <text x="469" y="158" class="t head">TRANSFERRED CONSTRAINT</text>
-  <text x="880" y="158" class="t head">WHAT WE BUILT</text>
+  <text x="880" y="158" class="t head">HOW THE PATTERN MAPS HERE</text>
 
   <g transform="translate(58 184)">
     <path class="box" d="M8 5 Q2 8 4 18 L4 147 Q6 157 17 157 L320 157 Q332 155 333 143 L331 17 Q330 4 318 5 Z"/>
