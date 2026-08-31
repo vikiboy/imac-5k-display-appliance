@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">How three analogies transferred into engineering constraints</title>
+  <desc id="desc">A flowchart maps thin clients, real-time media pipelines and network control planes to the constraints and implementation choices in the 5K iMac display appliance.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#285b57"/></marker>
+    <pattern id="paper" width="19" height="19" patternUnits="userSpaceOnUse"><path d="M0 18.5H19" stroke="#d8d0c2" stroke-width="0.55" opacity="0.3"/></pattern>
+    <style>
+      .t { font-family: -apple-system, BlinkMacSystemFont, "Avenir Next", "Segoe UI", sans-serif; fill:#26332f; }
+      .h { font-size:34px; font-weight:650; }
+      .head { font-size:17px; font-weight:700; letter-spacing:1.6px; }
+      .name { font-size:22px; font-weight:650; }
+      .body { font-size:17px; font-weight:450; }
+      .small { font-size:14px; font-weight:500; }
+      .box { fill:#fffdf8; stroke:#26332f; stroke-width:2.1; }
+      .flow { fill:none; stroke:#285b57; stroke-width:3.2; stroke-linecap:round; marker-end:url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1280" height="760" rx="18" fill="#fbf7ef"/>
+  <rect width="1280" height="760" rx="18" fill="url(#paper)"/>
+  <text x="58" y="68" class="t h">Analogies did not prove the answer. They narrowed the search.</text>
+  <text x="58" y="103" class="t body">Each borrowed pattern became a constraint that could be tested on the actual hardware.</text>
+
+  <text x="70" y="158" class="t head">FAMILIAR SYSTEM</text>
+  <text x="469" y="158" class="t head">TRANSFERRED CONSTRAINT</text>
+  <text x="880" y="158" class="t head">WHAT WE BUILT</text>
+
+  <g transform="translate(58 184)">
+    <path class="box" d="M8 5 Q2 8 4 18 L4 147 Q6 157 17 157 L320 157 Q332 155 333 143 L331 17 Q330 4 318 5 Z"/>
+    <text x="168" y="43" text-anchor="middle" class="t name">Thin client</text>
+    <text x="168" y="76" text-anchor="middle" class="t body">The screen and the computer</text>
+    <text x="168" y="101" text-anchor="middle" class="t body">do not need to be the same box.</text>
+    <text x="168" y="132" text-anchor="middle" class="t small">Treat the iMac as an active endpoint.</text>
+  </g>
+  <path class="flow" d="M402 262 C424 247 438 247 459 262"/>
+  <g transform="translate(470 184)">
+    <path class="box" d="M8 5 Q2 8 4 18 L4 147 Q6 157 17 157 L320 157 Q332 155 333 143 L331 17 Q330 4 318 5 Z"/>
+    <text x="168" y="43" text-anchor="middle" class="t name">Separate the jobs</text>
+    <text x="168" y="76" text-anchor="middle" class="t body">Render · capture · transport</text>
+    <text x="168" y="101" text-anchor="middle" class="t body">· decode · present</text>
+    <text x="168" y="132" text-anchor="middle" class="t small">Measure every boundary.</text>
+  </g>
+  <path class="flow" d="M814 262 C836 247 850 247 871 262"/>
+  <g transform="translate(882 184)">
+    <path class="box" d="M8 5 Q2 8 4 18 L4 147 Q6 157 17 157 L320 157 Q332 155 333 143 L331 17 Q330 4 318 5 Z"/>
+    <text x="168" y="43" text-anchor="middle" class="t name">Two-computer appliance</text>
+    <text x="168" y="76" text-anchor="middle" class="t body">Virtual Retina display on one Mac;</text>
+    <text x="168" y="101" text-anchor="middle" class="t body">native Metal surface on the other.</text>
+    <text x="168" y="132" text-anchor="middle" class="t small">No panel surgery.</text>
+  </g>
+
+  <g transform="translate(58 371)">
+    <path class="box" d="M8 5 Q2 8 4 18 L4 147 Q6 157 17 157 L320 157 Q332 155 333 143 L331 17 Q330 4 318 5 Z"/>
+    <text x="168" y="43" text-anchor="middle" class="t name">Real-time media pipeline</text>
+    <text x="168" y="76" text-anchor="middle" class="t body">Old work becomes harmful when</text>
+    <text x="168" y="101" text-anchor="middle" class="t body">latency is allowed to accumulate.</text>
+    <text x="168" y="132" text-anchor="middle" class="t small">Backpressure must be bounded.</text>
+  </g>
+  <path class="flow" d="M402 449 C424 434 438 434 459 449"/>
+  <g transform="translate(470 371)">
+    <path class="box" d="M8 5 Q2 8 4 18 L4 147 Q6 157 17 157 L320 157 Q332 155 333 143 L331 17 Q330 4 318 5 Z"/>
+    <text x="168" y="43" text-anchor="middle" class="t name">Overlap, never stockpile</text>
+    <text x="168" y="76" text-anchor="middle" class="t body">Fill n+1 while Metal presents n.</text>
+    <text x="168" y="101" text-anchor="middle" class="t body">Cap memory and work in flight.</text>
+    <text x="168" y="132" text-anchor="middle" class="t small">Two slots, not “more buffering.”</text>
+  </g>
+  <path class="flow" d="M814 449 C836 434 850 434 871 449"/>
+  <g transform="translate(882 371)">
+    <path class="box" d="M8 5 Q2 8 4 18 L4 147 Q6 157 17 157 L320 157 Q332 155 333 143 L331 17 Q330 4 318 5 Z"/>
+    <text x="168" y="43" text-anchor="middle" class="t name">Fixed two-slot receiver</text>
+    <text x="168" y="76" text-anchor="middle" class="t body">128 MiB total receive pool;</text>
+    <text x="168" y="101" text-anchor="middle" class="t body">59.972 presented FPS measured.</text>
+    <text x="168" y="132" text-anchor="middle" class="t small">One drop in five minutes.</text>
+  </g>
+
+  <g transform="translate(58 558)">
+    <path class="box" d="M8 5 Q2 8 4 18 L4 147 Q6 157 17 157 L320 157 Q332 155 333 143 L331 17 Q330 4 318 5 Z"/>
+    <text x="168" y="43" text-anchor="middle" class="t name">Network control plane</text>
+    <text x="168" y="76" text-anchor="middle" class="t body">A service can remain reachable</text>
+    <text x="168" y="101" text-anchor="middle" class="t body">while expensive work is paused.</text>
+    <text x="168" y="132" text-anchor="middle" class="t small">Availability is not frame admission.</text>
+  </g>
+  <path class="flow" d="M402 636 C424 621 438 621 459 636"/>
+  <g transform="translate(470 558)">
+    <path class="box" d="M8 5 Q2 8 4 18 L4 147 Q6 157 17 157 L320 157 Q332 155 333 143 L331 17 Q330 4 318 5 Z"/>
+    <text x="168" y="43" text-anchor="middle" class="t name">Split control from pixels</text>
+    <text x="168" y="76" text-anchor="middle" class="t body">Keep discovery and reconnect alive;</text>
+    <text x="168" y="101" text-anchor="middle" class="t body">pause capture/GPU when unavailable.</text>
+    <text x="168" y="132" text-anchor="middle" class="t small">Resume only after a fresh frame.</text>
+  </g>
+  <path class="flow" d="M814 636 C836 621 850 621 871 636"/>
+  <g transform="translate(882 558)">
+    <path class="box" d="M8 5 Q2 8 4 18 L4 147 Q6 157 17 157 L320 157 Q332 155 333 143 L331 17 Q330 4 318 5 Z"/>
+    <text x="168" y="43" text-anchor="middle" class="t name">Sleep-safe reconnect</text>
+    <text x="168" y="76" text-anchor="middle" class="t body">Cable and source wake restore</text>
+    <text x="168" y="101" text-anchor="middle" class="t body">without stale pixels or busy work.</text>
+    <text x="168" y="132" text-anchor="middle" class="t small">Secure login remains authoritative.</text>
+  </g>
+</svg>

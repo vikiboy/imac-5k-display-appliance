@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Serial receive versus two-slot bounded overlap</title>
+  <desc id="desc">The serial receiver waits to finish presenting one frame before reading the next. The two-slot receiver fills the next fixed buffer while Metal presents the current one, improving measured cadence from 58.376 to 59.972 frames per second.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#26332f"/></marker>
+    <pattern id="paper" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M0 19.5H20" stroke="#d8d0c2" stroke-width="0.6" opacity="0.3"/></pattern>
+    <style>
+      .t { font-family: -apple-system, BlinkMacSystemFont, "Avenir Next", "Segoe UI", sans-serif; fill:#26332f; }
+      .h { font-size:34px; font-weight:650; }
+      .sub { font-size:18px; font-weight:450; }
+      .lane { font-size:22px; font-weight:650; }
+      .stage { font-size:17px; font-weight:600; }
+      .note { font-size:15px; font-weight:500; }
+      .axis { stroke:#26332f; stroke-width:2; stroke-linecap:round; marker-end:url(#arrow); }
+      .sketch { stroke:#26332f; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
+    </style>
+  </defs>
+  <rect width="1280" height="720" rx="18" fill="#fbf7ef"/>
+  <rect width="1280" height="720" rx="18" fill="url(#paper)"/>
+  <text x="58" y="67" class="t h">The useful analogy: a two-station assembly line</text>
+  <text x="58" y="102" class="t sub">Do not make the network wait while the GPU presents. Keep exactly one next frame ready.</text>
+
+  <text x="58" y="170" class="t lane">Before · serial</text>
+  <line x1="225" y1="180" x2="1205" y2="180" class="axis"/>
+  <g transform="translate(250 205)">
+    <rect x="0" y="0" width="245" height="92" rx="9" fill="#d9e8f3" class="sketch"/>
+    <text x="122" y="39" text-anchor="middle" class="t stage">Receive frame n</text>
+    <text x="122" y="65" text-anchor="middle" class="t note">socket reader occupied</text>
+    <rect x="252" y="0" width="205" height="92" rx="9" fill="#dfe9dc" class="sketch"/>
+    <text x="354" y="39" text-anchor="middle" class="t stage">Present n</text>
+    <text x="354" y="65" text-anchor="middle" class="t note">Metal / panel</text>
+    <rect x="464" y="0" width="245" height="92" rx="9" fill="#d9e8f3" class="sketch"/>
+    <text x="586" y="39" text-anchor="middle" class="t stage">Receive frame n+1</text>
+    <text x="586" y="65" text-anchor="middle" class="t note">starts late</text>
+  </g>
+  <path d="M722 315 q26 21 52 0" fill="none" stroke="#c46f4b" stroke-width="3" stroke-linecap="round"/>
+  <text x="1185" y="249" text-anchor="end" class="t lane" fill="#9a4e34">58.376 FPS</text>
+  <text x="1185" y="276" text-anchor="end" class="t note">55 drops / five minutes</text>
+
+  <text x="58" y="395" class="t lane">After · two fixed slots</text>
+  <line x1="270" y1="405" x2="1205" y2="405" class="axis"/>
+  <text x="96" y="464" class="t stage">Slot A</text>
+  <text x="96" y="561" class="t stage">Slot B</text>
+  <g transform="translate(250 430)">
+    <rect x="0" y="0" width="245" height="70" rx="9" fill="#d9e8f3" class="sketch"/>
+    <text x="122" y="43" text-anchor="middle" class="t stage">Receive frame n</text>
+    <rect x="252" y="0" width="205" height="70" rx="9" fill="#dfe9dc" class="sketch"/>
+    <text x="354" y="43" text-anchor="middle" class="t stage">Present n</text>
+    <rect x="464" y="0" width="205" height="70" rx="9" fill="#dfe9dc" class="sketch"/>
+    <text x="566" y="43" text-anchor="middle" class="t stage">Present n+1</text>
+    <rect x="252" y="96" width="245" height="70" rx="9" fill="#d9e8f3" class="sketch"/>
+    <text x="374" y="139" text-anchor="middle" class="t stage">Receive frame n+1</text>
+    <rect x="504" y="96" width="245" height="70" rx="9" fill="#d9e8f3" class="sketch"/>
+    <text x="626" y="139" text-anchor="middle" class="t stage">Receive frame n+2</text>
+  </g>
+  <path d="M525 520 C572 545 633 545 679 520" fill="none" stroke="#285b57" stroke-width="3" stroke-linecap="round"/>
+  <text x="1185" y="476" text-anchor="end" class="t lane">59.972 FPS</text>
+  <text x="1185" y="503" text-anchor="end" class="t note">1 drop / five minutes</text>
+
+  <rect x="58" y="627" width="1164" height="58" rx="8" fill="#fffdf8" stroke="#c46f4b" stroke-width="2"/>
+  <text x="640" y="652" text-anchor="middle" class="t stage">Bounded means predictable: two reusable 64 MiB receive slots, no growing queue, no frame cache on disk.</text>
+  <text x="640" y="675" text-anchor="middle" class="t note">The analogy suggested the structure; hardware presentation timestamps decided whether it worked.</text>
+</svg>

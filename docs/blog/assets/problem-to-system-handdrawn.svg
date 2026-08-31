@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 690" role="img" aria-labelledby="title desc">
+  <title id="title">From an iMac with no video input to a two-computer display system</title>
+  <desc id="desc">A hand-drawn flow from a MacBook virtual Retina display through lossless compression and Thunderbolt Bridge to Metal presentation on a 2017 iMac.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#285b57"/>
+    </marker>
+    <pattern id="paper" width="18" height="18" patternUnits="userSpaceOnUse">
+      <path d="M0 17.5H18" stroke="#d8d0c2" stroke-width="0.6" opacity="0.34"/>
+      <path d="M17.5 0V18" stroke="#d8d0c2" stroke-width="0.45" opacity="0.2"/>
+    </pattern>
+    <style>
+      .label { font-family: -apple-system, BlinkMacSystemFont, "Avenir Next", "Segoe UI", sans-serif; fill: #26332f; }
+      .title { font-size: 35px; font-weight: 650; letter-spacing: -0.4px; }
+      .step { font-size: 22px; font-weight: 650; }
+      .body { font-size: 17px; font-weight: 450; }
+      .small { font-size: 14px; font-weight: 500; }
+      .box { fill: #fffdf8; stroke: #26332f; stroke-width: 2.2; }
+      .sketch { fill: none; stroke: #26332f; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+      .flow { fill: none; stroke: #285b57; stroke-width: 4; stroke-linecap: round; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1280" height="690" rx="18" fill="#fbf7ef"/>
+  <rect width="1280" height="690" rx="18" fill="url(#paper)"/>
+
+  <text x="62" y="70" class="label title">The panel had no input. So we built a display system.</text>
+  <text x="62" y="105" class="label body">The iMac stays booted; software gives each machine one clear job.</text>
+
+  <g transform="translate(62 172)">
+    <path class="box" d="M8 8 Q2 10 4 22 L4 280 Q5 291 17 292 L264 292 Q277 291 278 278 L278 18 Q276 5 264 6 Z"/>
+    <rect x="39" y="52" width="204" height="126" rx="7" fill="#dcebea" stroke="#26332f" stroke-width="2"/>
+    <path class="sketch" d="M65 151c35-33 59-53 89-35 28-27 50-9 70 35" opacity="0.62"/>
+    <path class="sketch" d="M18 227 Q139 201 264 229 L244 258 Q140 271 37 256 Z"/>
+    <text x="140" y="334" text-anchor="middle" class="label step">1 · Render</text>
+    <text x="140" y="362" text-anchor="middle" class="label body">A real extended desktop</text>
+    <text x="140" y="387" text-anchor="middle" class="label body">at 2560 × 1440 points</text>
+    <text x="140" y="414" text-anchor="middle" class="label small">backed by 5120 × 2880 pixels</text>
+  </g>
+
+  <path class="flow" d="M350 313 C375 299 390 299 416 312"/>
+
+  <g transform="translate(430 172)">
+    <path class="box" d="M8 8 Q1 11 3 22 L3 280 Q4 292 17 292 L261 292 Q275 290 275 278 L275 18 Q274 5 260 6 Z"/>
+    <g transform="translate(38 55)">
+      <g fill="#477f79" opacity="0.85">
+        <rect x="0" y="0" width="38" height="38" rx="4"/><rect x="46" y="0" width="38" height="38" rx="4"/><rect x="92" y="0" width="38" height="38" rx="4"/><rect x="138" y="0" width="38" height="38" rx="4"/>
+        <rect x="0" y="46" width="38" height="38" rx="4"/><rect x="46" y="46" width="38" height="38" rx="4"/><rect x="92" y="46" width="38" height="38" rx="4"/><rect x="138" y="46" width="38" height="38" rx="4"/>
+      </g>
+      <path d="M2 112 C31 92 55 126 82 105 S133 125 174 99" fill="none" stroke="#c46f4b" stroke-width="4" stroke-linecap="round"/>
+      <path d="M2 142 C38 125 55 160 91 138 S140 155 174 130" fill="none" stroke="#315d88" stroke-width="4" stroke-linecap="round"/>
+    </g>
+    <text x="139" y="334" text-anchor="middle" class="label step">2 · Compress</text>
+    <text x="139" y="362" text-anchor="middle" class="label body">Lossless 8-bit RGB</text>
+    <text x="139" y="387" text-anchor="middle" class="label body">in independent 8 × 8 tiles</text>
+    <text x="139" y="414" text-anchor="middle" class="label small">TBD2 / differential coding</text>
+  </g>
+
+  <path class="flow" d="M718 313 C743 299 759 299 784 312"/>
+
+  <g transform="translate(798 172)">
+    <path class="box" d="M8 8 Q1 11 3 22 L3 280 Q4 292 17 292 L261 292 Q275 290 275 278 L275 18 Q274 5 260 6 Z"/>
+    <path d="M42 113 C78 68 117 159 151 112 S214 76 236 113" fill="none" stroke="#315d88" stroke-width="8" stroke-linecap="round"/>
+    <path d="M42 143 C78 98 117 189 151 142 S214 106 236 143" fill="none" stroke="#477f79" stroke-width="8" stroke-linecap="round"/>
+    <circle cx="42" cy="128" r="10" fill="#c46f4b"/><circle cx="236" cy="128" r="10" fill="#c46f4b"/>
+    <text x="139" y="334" text-anchor="middle" class="label step">3 · Transport</text>
+    <text x="139" y="362" text-anchor="middle" class="label body">Direct Thunderbolt Bridge</text>
+    <text x="139" y="387" text-anchor="middle" class="label body">17.06 Gbit/s measured TCP</text>
+    <text x="139" y="414" text-anchor="middle" class="label small">not the cable’s headline rate</text>
+  </g>
+
+  <path class="flow" d="M1086 313 C1110 299 1126 299 1150 312"/>
+
+  <g transform="translate(1158 179)">
+    <rect x="0" y="0" width="93" height="250" rx="9" fill="#fffdf8" stroke="#26332f" stroke-width="2.2"/>
+    <rect x="12" y="16" width="69" height="162" rx="4" fill="#dcebea" stroke="#26332f" stroke-width="1.8"/>
+    <g fill="#315d88" opacity="0.7">
+      <rect x="17" y="22" width="8" height="8"/><rect x="29" y="22" width="8" height="8"/><rect x="41" y="22" width="8" height="8"/><rect x="53" y="22" width="8" height="8"/><rect x="65" y="22" width="8" height="8"/>
+      <rect x="17" y="34" width="8" height="8"/><rect x="29" y="34" width="8" height="8"/><rect x="41" y="34" width="8" height="8"/><rect x="53" y="34" width="8" height="8"/><rect x="65" y="34" width="8" height="8"/>
+    </g>
+    <circle cx="47" cy="208" r="17" fill="none" stroke="#c46f4b" stroke-width="4"/>
+    <path class="sketch" d="M47 191v34M30 208h34"/>
+    <path class="sketch" d="M33 250h28M47 225v25"/>
+  </g>
+  <text x="1204" y="513" text-anchor="middle" class="label step">4 · Present</text>
+  <text x="1204" y="541" text-anchor="middle" class="label body">Metal on the</text>
+  <text x="1204" y="565" text-anchor="middle" class="label body">Radeon Pro 575</text>
+
+  <path d="M62 628 Q638 611 1218 628" fill="none" stroke="#c46f4b" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="640" y="662" text-anchor="middle" class="label body">The iMac is still a Mac. Its CPU, GPU and macOS become part of the monitor.</text>
+</svg>
