@@ -4725,7 +4725,22 @@ final class TBDisplaySenderSession: NSObject, ObservableObject, Identifiable, @u
     }
 
     private func send(_ packet: Data) {
-        connection?.send(content: packet, completion: .contentProcessed({ _ in }))
+        guard let activeConnection = connection else { return }
+        activeConnection.send(content: packet, completion: .contentProcessed { [weak self] error in
+            guard let error else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.connection === activeConnection else { return }
+                TBLog.connection.error(
+                    "control send failed; recycling stale session: \(error.localizedDescription, privacy: .public)"
+                )
+                self.setStatus(.connectionClosed(error.localizedDescription))
+                self.stop(
+                    resetStatusTo: nil,
+                    persistArrangement: false,
+                    teardownReason: "sender_control_send_failed"
+                )
+            }
+        })
     }
 
     func sendInputEvent(_ event: TBMonitorInputEvent) {
