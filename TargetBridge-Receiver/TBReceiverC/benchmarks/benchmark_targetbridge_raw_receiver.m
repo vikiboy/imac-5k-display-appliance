@@ -2606,7 +2606,16 @@ int main(int argc, const char *argv[]) {
                 presentationController.streamActive = NO;
             });
             if (tb_shutdown_gate_is_requested(shutdownGate)) break;
-            if (serveForever) continue;
+            // A failed display power gate is only cleared by a live session,
+            // so every later session would be refused here. Exit instead and
+            // let launchd start a fresh receiver with clean power state.
+            if (serveForever && !initialPowerFailure) continue;
+            if (initialPowerFailure) {
+                receiver_diagnostic(
+                    OS_LOG_TYPE_FAULT,
+                    "session=failed reason=stale-power-gate-failure "
+                    "process=restart");
+            }
             exitCode = 74;
             break;
         }
