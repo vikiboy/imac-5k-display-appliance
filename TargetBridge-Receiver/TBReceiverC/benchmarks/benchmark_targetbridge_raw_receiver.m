@@ -3338,6 +3338,11 @@ int main(int argc, const char *argv[]) {
         }
         if (presentationDrainTimedOut && !processFatal) {
             rendererFailures++;
+            // Outstanding drawable callbacks belong to this renderer, not
+            // just this connection. Reusing it can reject every later HELLO.
+            // Unwind through the existing fatal cleanup; launchd then starts
+            // a fresh receiver with balanced cursor and power ownership.
+            processFatal = true;
             sessionEndReason = "presentation-callback-timeout";
             fprintf(stderr,
                     "TB_PROTOCOL_METAL error=presentation-callback-timeout "
