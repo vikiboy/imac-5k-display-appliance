@@ -47,7 +47,8 @@ enum {
     TB_PACKET_RECEIVER_SURFACE_STATE = 0x39,
     TB_PACKET_SOURCE_DISPLAY_STATE = 0x3A,
     TB_MAX_PACKET_LENGTH = TB_PRE_SESSION_MAX_PACKET_LENGTH,
-    TB_SERVE_PEER_IDLE_TIMEOUT_SECONDS = 15
+    TB_SERVE_PEER_IDLE_TIMEOUT_SECONDS = 15,
+    TB_SERVE_MAX_UNSTARTED_SESSIONS = 5
 };
 
 /* The pre-surface startup broker runs before NSApplication's main event loop,
@@ -2464,6 +2465,10 @@ int main(int argc, const char *argv[]) {
          * latency-growing frame queue can form. */
         dispatch_group_async(transportGroup, transportQueue, ^{
         @autoreleasepool {
+        // Display sessions accepted (HELLO received) that never reached
+        // profile-sent. Several setup failures retry in process without
+        // logging, and some leave state that refuses every later session.
+        int unstartedSessions = 0;
         do {
         @autoreleasepool {
         const int listenerWait =
@@ -2529,6 +2534,18 @@ int main(int argc, const char *argv[]) {
                 tb_shutdown_gate_close_peer(shutdownGate, &peer);
                 if (tb_shutdown_gate_is_requested(shutdownGate)) break;
                 continue;
+            }
+            // Repeated failed starts mean the receiver is wedged.
+            // Exit so launchd starts a fresh process with clean state.
+            if (++unstartedSessions > TB_SERVE_MAX_UNSTARTED_SESSIONS) {
+                receiver_diagnostic(
+                    OS_LOG_TYPE_FAULT,
+                    "session=failed reason=repeated-unstarted-sessions "
+                    "count=%d process=restart",
+                    unstartedSessions - 1);
+                tb_shutdown_gate_close_peer(shutdownGate, &peer);
+                exitCode = 74;
+                break;
             }
         }
         if (tb_power_lifecycle_request_panel_wake(&powerLifecycle) != 0) {
@@ -2619,6 +2636,7 @@ int main(int argc, const char *argv[]) {
             exitCode = 74;
             break;
         }
+        unstartedSessions = 0;
         printf("TB_PROTOCOL_METAL state=profile-sent capture=5120x2880 rawNV12=true dpcm=%s\n",
                supportsDPCM ? "true" : "false");
         fflush(stdout);

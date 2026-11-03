@@ -61,3 +61,13 @@ appliance account.
 | MacBook unplug/replug at the Studio Display, several rounds | Display live ~15 s after replug, no manual action |
 | Port found in USB mode on arrival | One automatic reset, Thunderbolt restored |
 | iMac full restart (`shutdown -r now`) | Auto-login, no lock, display live ~55 s later |
+
+## Follow-up 2026-11-03
+
+The receiver wedged again after `display-power-gate-failed` on 2026-10-30
+16:41, but this time sessions were refused before the
+`initial-lifecycle-state` check, so the targeted exit never ran. Several
+setup paths between HELLO and profile retry in process without logging.
+The receiver now counts accepted sessions that never reach profile-sent and
+exits after more than 5 in a row (reset on every successful start), so any
+such wedge recovers through launchd within one sender retry cycle.
